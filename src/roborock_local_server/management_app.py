@@ -24,6 +24,8 @@ from fastapi.responses import HTMLResponse, JSONResponse
 
 from .config import diagnose_config
 from .configure import (
+    ACME_SERVER_DISPLAY_NAMES,
+    ACME_SERVERS_REQUIRING_EAB,
     ConfigureAnswers,
     _normalize_acme_server,
     _normalize_hostname,
@@ -102,11 +104,12 @@ def _answers_from_payload(body: Mapping[str, Any]) -> ConfigureAnswers:
         cloudflare_token = s("cloudflare_token")
         if not cloudflare_token:
             raise ValueError("cloudflare_token is required")
-        if acme_server == "actalis":
+        if acme_server in ACME_SERVERS_REQUIRING_EAB:
             acme_eab_kid = s("acme_eab_kid")
             acme_eab_hmac_key = s("acme_eab_hmac_key")
             if not acme_eab_kid or not acme_eab_hmac_key:
-                raise ValueError("Actalis requires both acme_eab_kid and acme_eab_hmac_key")
+                display_name = ACME_SERVER_DISPLAY_NAMES.get(acme_server, acme_server)
+                raise ValueError(f"{display_name} requires both acme_eab_kid and acme_eab_hmac_key")
 
     admin_password = s("admin_password")
     if not admin_password:
@@ -308,6 +311,10 @@ def _hidden_unless(prefill: Mapping[str, str], field: str, value: str, *, defaul
     return "" if prefill.get(field, default) == value else "hidden"
 
 
+def _hidden_unless_in(prefill: Mapping[str, str], field: str, values: tuple[str, ...], *, default: str) -> str:
+    return "" if prefill.get(field, default) in values else "hidden"
+
+
 def _setup_wizard_html(prefill: Mapping[str, str] | None = None) -> str:
     prefill = prefill or {}
     stack_fqdn_value = html.escape(prefill.get("stack_fqdn", ""))
@@ -325,7 +332,9 @@ def _setup_wizard_html(prefill: Mapping[str, str] | None = None) -> str:
     tls_provided_hidden = _hidden_unless(prefill, "tls_mode", "provided", default="cloudflare_acme")
     acme_zerossl_selected = _selected(prefill, "acme_server", "zerossl", default="zerossl")
     acme_actalis_selected = _selected(prefill, "acme_server", "actalis", default="zerossl")
-    acme_actalis_hidden = _hidden_unless(prefill, "acme_server", "actalis", default="zerossl")
+    acme_letsencrypt_selected = _selected(prefill, "acme_server", "letsencrypt", default="zerossl")
+    acme_sslcom_selected = _selected(prefill, "acme_server", "sslcom", default="zerossl")
+    acme_eab_hidden = _hidden_unless_in(prefill, "acme_server", ACME_SERVERS_REQUIRING_EAB, default="zerossl")
 
     return (
         dedent(
@@ -411,18 +420,20 @@ def _setup_wizard_html(prefill: Mapping[str, str] | None = None) -> str:
                     <select name="acme_server" id="acme_server">
                       <option value="zerossl" {acme_zerossl_selected}>ZeroSSL (recommended)</option>
                       <option value="actalis" {acme_actalis_selected}>Actalis</option>
+                      <option value="letsencrypt" {acme_letsencrypt_selected}>Let's Encrypt</option>
+                      <option value="sslcom" {acme_sslcom_selected}>SSL.com</option>
                     </select>
                     <label>Certificate authority</label>
                   </div>
                 </div>
-                <div id="acme_actalis" class="row {acme_actalis_hidden}">
+                <div id="acme_eab" class="row {acme_eab_hidden}">
                   <div class="input-field col s6">
                     <input id="acme_eab_kid" name="acme_eab_kid" type="text">
-                    <label for="acme_eab_kid">Actalis EAB KID</label>
+                    <label for="acme_eab_kid">ACME EAB KID</label>
                   </div>
                   <div class="input-field col s6">
                     <input id="acme_eab_hmac_key" name="acme_eab_hmac_key" type="password">
-                    <label for="acme_eab_hmac_key">Actalis EAB HMAC key</label>
+                    <label for="acme_eab_hmac_key">ACME EAB HMAC key</label>
                   </div>
                 </div>
               </div>
@@ -502,7 +513,8 @@ def _setup_wizard_html(prefill: Mapping[str, str] | None = None) -> str:
             toggle("broker_mode", {external: "broker_external"});
             toggle("tls_mode", {cloudflare_acme: "tls_cloudflare", provided: "tls_provided"});
             document.getElementById("acme_server").addEventListener("change", (event) => {
-              document.getElementById("acme_actalis").classList.toggle("hidden", event.target.value !== "actalis");
+              const eabRequired = ["actalis", "sslcom"].includes(event.target.value);
+              document.getElementById("acme_eab").classList.toggle("hidden", !eabRequired);
             });
 
             """
