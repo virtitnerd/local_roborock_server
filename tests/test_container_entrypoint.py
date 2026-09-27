@@ -128,6 +128,39 @@ def test_run_entrypoint_generates_config_from_env_vars(
     assert calls == [("write", data_config), ("exec", data_config)]
 
 
+def test_run_entrypoint_falls_back_to_wizard_when_env_config_is_incomplete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # STACK_FQDN alone triggers has_env_config(), but the rest of the
+    # required vars for the default tls_mode may not be set. That must fall
+    # through into the Setup Wizard, not crash the container.
+    compose_config = tmp_path / "app-config.toml"
+    data_config = tmp_path / "data-config.toml"
+    addon_options = tmp_path / "options.json"
+    monkeypatch.setenv("ROBOROCK_SERVER_STACK_FQDN", "api-roborock.example.com")
+
+    def fake_write_config_from_env(env, *, config_path):
+        raise ValueError("ROBOROCK_SERVER_TLS_BASE_DOMAIN is required")
+
+    monkeypatch.setattr(container_entrypoint, "write_config_from_env", fake_write_config_from_env)
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        container_entrypoint,
+        "_exec_server",
+        lambda config_path: calls.append(config_path),
+    )
+
+    container_entrypoint._run_entrypoint(
+        compose_config=compose_config,
+        data_config=data_config,
+        addon_options=addon_options,
+    )
+
+    assert calls == [data_config]
+    assert data_config.exists() is False
+
+
 def test_run_entrypoint_execs_server_even_without_any_config_present(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

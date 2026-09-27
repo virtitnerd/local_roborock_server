@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
 
 from .env_config import has_env_config, write_config_from_env
 from .ha_addon import write_config_from_home_assistant_options
@@ -34,14 +35,24 @@ def _run_entrypoint(*, compose_config: Path, data_config: Path, addon_options: P
         return
 
     if has_env_config(os.environ):
-        write_config_from_env(os.environ, config_path=data_config)
-        _exec_server(data_config)
-        return
+        try:
+            write_config_from_env(os.environ, config_path=data_config)
+        except ValueError as exc:
+            print(
+                f"ROBOROCK_SERVER_STACK_FQDN is set, but generating config.toml from "
+                f"ROBOROCK_SERVER_* env vars failed: {exc}. Falling back to the Setup Wizard "
+                "at /admin to finish configuration - set the remaining env vars instead if you "
+                "want a fully headless boot.",
+                file=sys.stderr,
+            )
+        else:
+            _exec_server(data_config)
+            return
 
-    # No config anywhere yet, and no ROBOROCK_SERVER_* env vars either.
-    # `serve` itself now handles this: it serves the Setup Wizard at /admin
-    # until /data/config.toml exists, then a container restart (Docker's
-    # restart policy) picks up the full stack once the wizard writes it.
+    # No usable config anywhere yet. `serve` itself now handles this: it
+    # serves the Setup Wizard at /admin until /data/config.toml exists, then
+    # a container restart (Docker's restart policy) picks up the full stack
+    # once the wizard writes it.
     _exec_server(data_config)
 
 
