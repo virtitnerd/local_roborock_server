@@ -190,6 +190,43 @@ def test_write_config_from_env_actalis_writes_eab(tmp_path: Path) -> None:
     assert hmac_path.read_text(encoding="utf-8") == "hmac-456"
 
 
+def test_write_config_from_env_letsencrypt_needs_no_eab(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    env = dict(_BASE_ENV)
+    env["ROBOROCK_SERVER_TLS_MODE"] = "cloudflare_acme"
+    env["ROBOROCK_SERVER_TLS_BASE_DOMAIN"] = "example.com"
+    env["ROBOROCK_SERVER_TLS_EMAIL"] = "acme@example.com"
+    env["ROBOROCK_SERVER_ACME_SERVER"] = "letsencrypt"
+    env["ROBOROCK_SERVER_CLOUDFLARE_TOKEN"] = "cloudflare-token-123"
+    del env["ROBOROCK_SERVER_CERT_FILE"]
+    del env["ROBOROCK_SERVER_KEY_FILE"]
+
+    write_config_from_env(
+        env,
+        config_path=config_path,
+        secret_paths=SecretPaths(cloudflare_token_file=tmp_path / "cloudflare_token"),
+    )
+
+    parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert parsed["tls"]["acme_server"] == "letsencrypt"
+    assert "acme_eab_kid_file" not in parsed["tls"] or not parsed["tls"]["acme_eab_kid_file"]
+
+
+def test_write_config_from_env_sslcom_requires_eab(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.toml"
+    env = dict(_BASE_ENV)
+    env["ROBOROCK_SERVER_TLS_MODE"] = "cloudflare_acme"
+    env["ROBOROCK_SERVER_TLS_BASE_DOMAIN"] = "example.com"
+    env["ROBOROCK_SERVER_TLS_EMAIL"] = "acme@example.com"
+    env["ROBOROCK_SERVER_ACME_SERVER"] = "sslcom"
+    env["ROBOROCK_SERVER_CLOUDFLARE_TOKEN"] = "cloudflare-token-123"
+    del env["ROBOROCK_SERVER_CERT_FILE"]
+    del env["ROBOROCK_SERVER_KEY_FILE"]
+
+    with pytest.raises(ValueError, match="SSL.com requires"):
+        write_config_from_env(env, config_path=config_path)
+
+
 def test_write_config_from_env_rejects_partial_admin_fields(tmp_path: Path) -> None:
     config_path = tmp_path / "config.toml"
     env = dict(_BASE_ENV)
