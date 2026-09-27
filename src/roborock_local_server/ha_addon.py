@@ -12,6 +12,7 @@ import tempfile
 from typing import Any
 from urllib.parse import urlsplit
 
+from .config import ACME_SERVERS, ACME_SERVERS_REQUIRING_EAB
 from .configure import hash_password
 
 DEFAULT_OPTIONS: dict[str, Any] = {
@@ -136,8 +137,8 @@ def _require_pin(value: object, *, field_name: str) -> str:
 
 def _normalize_acme_server(value: object, *, field_name: str) -> str:
     normalized = str(value or "").strip().lower() or "zerossl"
-    if normalized not in {"zerossl", "actalis"}:
-        raise ValueError(f"{field_name} must be 'zerossl' or 'actalis'")
+    if normalized not in ACME_SERVERS:
+        raise ValueError(f"{field_name} must be one of: {', '.join(ACME_SERVERS)}")
     return normalized
 
 
@@ -223,7 +224,7 @@ def _render_config_toml(
         _require_non_empty(cloudflare_token, field_name="cloudflare_token")
         if (acme_eab_kid and not acme_eab_hmac_key) or (acme_eab_hmac_key and not acme_eab_kid):
             raise ValueError("acme_eab_kid and acme_eab_hmac_key must be set together")
-        if acme_server == "actalis":
+        if acme_server in ACME_SERVERS_REQUIRING_EAB:
             _require_non_empty(acme_eab_kid, field_name="acme_eab_kid")
             _require_non_empty(acme_eab_hmac_key, field_name="acme_eab_hmac_key")
     else:
@@ -248,8 +249,8 @@ def _render_config_toml(
     password_hash = hash_password(admin_password)
     protocol_login_pin_hash = hash_password(protocol_login_pin)
     cloudflare_token_file = str(cloudflare_token_path)
-    acme_eab_kid_file = str(acme_eab_kid_path) if acme_server == "actalis" else ""
-    acme_eab_hmac_key_file = str(acme_eab_hmac_key_path) if acme_server == "actalis" else ""
+    acme_eab_kid_file = str(acme_eab_kid_path) if acme_server in ACME_SERVERS_REQUIRING_EAB else ""
+    acme_eab_hmac_key_file = str(acme_eab_hmac_key_path) if acme_server in ACME_SERVERS_REQUIRING_EAB else ""
 
     turn_mode = str(merged.get("turn_mode") or "disabled").strip().lower()
     if turn_mode not in {"disabled", "provided", "external"}:
@@ -367,7 +368,7 @@ def _render_config_toml(
     secrets_to_write: dict[Path, str] = {}
     if effective_tls_mode == "cloudflare_acme":
         secrets_to_write[cloudflare_token_path] = cloudflare_token
-        if acme_server == "actalis":
+        if acme_server in ACME_SERVERS_REQUIRING_EAB:
             secrets_to_write[acme_eab_kid_path] = acme_eab_kid
             secrets_to_write[acme_eab_hmac_key_path] = acme_eab_hmac_key
     return "\n".join(lines), secrets_to_write
