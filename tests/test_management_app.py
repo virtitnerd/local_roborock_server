@@ -260,6 +260,41 @@ def test_submit_setup_cloudflare_actalis_requires_eab(tmp_path: Path) -> None:
     assert "Actalis" in response.json()["error"]
 
 
+def test_submit_setup_cloudflare_sslcom_requires_eab(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    client = TestClient(create_management_app(config_file=config_file))
+    payload = dict(
+        _VALID_PAYLOAD,
+        tls_mode="cloudflare_acme",
+        base_domain="example.com",
+        email="acme@example.com",
+        cloudflare_token="cf-token",
+        acme_server="sslcom",
+    )
+
+    response = client.post("/admin/api/setup", json=payload)
+
+    assert response.status_code == 400
+    assert "SSL.com" in response.json()["error"]
+
+
+def test_submit_setup_cloudflare_letsencrypt_needs_no_eab(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    client = TestClient(create_management_app(config_file=config_file))
+    payload = dict(
+        _VALID_PAYLOAD,
+        tls_mode="cloudflare_acme",
+        base_domain="example.com",
+        email="acme@example.com",
+        cloudflare_token="cf-token",
+        acme_server="letsencrypt",
+    )
+
+    response = client.post("/admin/api/setup", json=payload)
+
+    assert response.status_code == 200
+
+
 def test_wizard_prefill_from_env_ignores_secrets() -> None:
     env = {
         "ROBOROCK_SERVER_STACK_FQDN": "api-rr.example.com",
@@ -300,11 +335,25 @@ def test_setup_wizard_html_reveals_provided_cert_section_when_prefilled() -> Non
     assert 'name="tls_mode" type="radio" value="provided" checked' in html
 
 
-def test_setup_wizard_html_reveals_actalis_fields_when_prefilled() -> None:
+def test_setup_wizard_html_reveals_eab_fields_when_prefilled_actalis() -> None:
     html = _setup_wizard_html(prefill={"acme_server": "actalis"})
 
-    assert 'id="acme_actalis" class="row hidden"' not in html
+    assert 'id="acme_eab" class="row hidden"' not in html
     assert 'value="actalis" selected' in html
+
+
+def test_setup_wizard_html_reveals_eab_fields_when_prefilled_sslcom() -> None:
+    html = _setup_wizard_html(prefill={"acme_server": "sslcom"})
+
+    assert 'id="acme_eab" class="row hidden"' not in html
+    assert 'value="sslcom" selected' in html
+
+
+def test_setup_wizard_html_hides_eab_fields_when_prefilled_letsencrypt() -> None:
+    html = _setup_wizard_html(prefill={"acme_server": "letsencrypt"})
+
+    assert 'id="acme_eab" class="row hidden"' in html
+    assert 'value="letsencrypt" selected' in html
 
 
 def test_setup_wizard_html_with_no_prefill_matches_original_defaults() -> None:
@@ -313,6 +362,6 @@ def test_setup_wizard_html_with_no_prefill_matches_original_defaults() -> None:
     assert 'input id="stack_fqdn" name="stack_fqdn" type="text" value="" required' in html
     assert 'id="broker_external" class="row hidden"' in html
     assert 'id="tls_cloudflare" class="">' in html
-    assert 'id="acme_actalis" class="row hidden"' in html
+    assert 'id="acme_eab" class="row hidden"' in html
     assert 'name="broker_mode" type="radio" value="embedded" checked' in html
     assert 'name="tls_mode" type="radio" value="cloudflare_acme" checked' in html
