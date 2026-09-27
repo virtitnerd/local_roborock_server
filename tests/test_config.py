@@ -175,6 +175,106 @@ protocol_login_pin_hash = "pbkdf2_sha256$600000$ghi$jkl"
         load_config(config_file)
 
 
+def test_load_config_accepts_letsencrypt_without_eab(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        """
+[network]
+stack_fqdn = "api-roborock.example.com"
+
+[broker]
+mode = "embedded"
+
+[storage]
+data_dir = "data"
+
+[tls]
+mode = "cloudflare_acme"
+base_domain = "example.com"
+email = "acme@example.com"
+cloudflare_token_file = "secrets/cloudflare_token"
+acme_server = "letsencrypt"
+
+[admin]
+password_hash = "pbkdf2_sha256$600000$abc$def"
+session_secret = "abcdefghijklmnopqrstuvwxyz123456"
+protocol_login_email = "user@example.com"
+protocol_login_pin_hash = "pbkdf2_sha256$600000$ghi$jkl"
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    config = load_config(config_file)
+
+    assert config.tls.acme_server == "letsencrypt"
+
+
+def test_load_config_requires_sslcom_eab(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        """
+[network]
+stack_fqdn = "api-roborock.example.com"
+
+[broker]
+mode = "embedded"
+
+[storage]
+data_dir = "data"
+
+[tls]
+mode = "cloudflare_acme"
+base_domain = "example.com"
+email = "acme@example.com"
+cloudflare_token_file = "secrets/cloudflare_token"
+acme_server = "sslcom"
+
+[admin]
+password_hash = "pbkdf2_sha256$600000$abc$def"
+session_secret = "abcdefghijklmnopqrstuvwxyz123456"
+protocol_login_email = "user@example.com"
+protocol_login_pin_hash = "pbkdf2_sha256$600000$ghi$jkl"
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="SSL.com requires"):
+        load_config(config_file)
+
+
+def test_load_config_rejects_unknown_acme_server(tmp_path: Path) -> None:
+    config_file = tmp_path / "config.toml"
+    config_file.write_text(
+        """
+[network]
+stack_fqdn = "api-roborock.example.com"
+
+[broker]
+mode = "embedded"
+
+[storage]
+data_dir = "data"
+
+[tls]
+mode = "cloudflare_acme"
+base_domain = "example.com"
+email = "acme@example.com"
+cloudflare_token_file = "secrets/cloudflare_token"
+acme_server = "bogus-ca"
+
+[admin]
+password_hash = "pbkdf2_sha256$600000$abc$def"
+session_secret = "abcdefghijklmnopqrstuvwxyz123456"
+protocol_login_email = "user@example.com"
+protocol_login_pin_hash = "pbkdf2_sha256$600000$ghi$jkl"
+        """.strip(),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="tls.acme_server must be one of"):
+        load_config(config_file)
+
+
 def test_load_config_accepts_actalis_eab_file_paths(tmp_path: Path) -> None:
     config_file = tmp_path / "config.toml"
     config_file.write_text(
