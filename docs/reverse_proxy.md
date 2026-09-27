@@ -51,6 +51,8 @@ cert_file = "/path/to/proxy/fullchain.pem"
 key_file = "/path/to/proxy/privkey.pem"
 ```
 
+This is the path to use with **[SWAG](https://github.com/linuxserver/docker-swag)**, since SWAG can't proxy MQTT (see the `external_tls` caveat below). Point `cert_file`/`key_file` at a copy of SWAG's own Let's Encrypt cert (commonly under `/config/keys/letsencrypt/` in the SWAG container, but verify against your version), then publish `mqtt_tls_port` directly - no nginx involvement for that port at all, since the server now presents a real cert itself. You can still optionally front `https_port` with a normal SWAG proxy-conf (nginx proxying to it as an HTTPS upstream), or also publish that port directly. A ready-to-copy proxy-conf and full walkthrough are in [`docs/examples/swag/`](examples/swag/).
+
 ### `external_tls` — the proxy terminates TLS
 
 The proxy terminates TLS and forwards plain HTTP/TCP to the server, which holds no certificates at all. The proxy is responsible for presenting a valid cert to clients.
@@ -65,6 +67,8 @@ mode = "provided"
 ```
 
 Equivalent env vars: `ROBOROCK_SERVER_LISTENER_MODE=external_tls`, `ROBOROCK_SERVER_TLS_MODE=provided`.
+
+> This mode needs a proxy that can terminate TLS for *both* HTTPS and MQTT (a stream/layer-4 proxy for the latter) - `listener_mode` is a single switch covering both listeners, not one you can set per-protocol. Caddy (with the [layer4 plugin](https://github.com/mholt/caddy-l4), shown below) and Traefik can do this. **[SWAG](https://github.com/linuxserver/docker-swag) cannot out of the box** - it ships the nginx stream module but deliberately disables it and has no supported convention for stream configs, so proxying MQTT through it would mean hand-editing its `nginx.conf`. If you're using SWAG, use `local_tls` instead (see above) and publish the MQTT port directly.
 
 Requirements:
 
