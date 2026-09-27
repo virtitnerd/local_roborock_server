@@ -1,13 +1,41 @@
-# SWAG example configs
+# SWAG example config
 
-Two files for running this stack behind [SWAG](https://github.com/linuxserver/docker-swag) in `external_tls` mode (SWAG terminates TLS, the local server speaks plain HTTP/TCP behind it). See [Reverse Proxy](../../reverse_proxy.md) for the full explanation.
+[SWAG](https://github.com/linuxserver/docker-swag) ships `nginx-mod-stream`
+but its build deliberately removes the default `stream.conf` that would
+enable it (`rm -f /etc/nginx/conf.d/stream.conf` in its Dockerfile), and it
+doesn't provide a `stream-confs` auto-include convention the way it does
+`proxy-confs`/`site-confs`. So MQTT (raw TCP/TLS, not HTTP) can't be proxied
+through SWAG's supported config layout without you hand-editing
+`nginx.conf` yourself to re-enable the module. Not recommended.
 
-- `api-roborock.subdomain.conf` -> copy into `/config/nginx/proxy-confs/` in your SWAG container. Handles the HTTPS/API traffic.
-- `api-roborock-mqtt.stream.conf` -> copy into `/config/nginx/stream-confs/` in your SWAG container (requires a SWAG image recent enough to support `stream-confs`; check its changelog if the directory doesn't exist yet). Handles MQTT/TLS passthrough.
+Use `local_tls` instead - the local server terminates TLS itself, using a
+copy of SWAG's own certificate, and you publish its MQTT port directly
+(bypassing nginx for that port entirely). See [Reverse Proxy](../../reverse_proxy.md#local_tls-default--the-server-terminates-tls).
 
-Before using them:
+In this stack's `config.toml` (or the equivalent `ROBOROCK_SERVER_*` env vars):
 
-1. Replace `api-roborock.*` and `roborock-local-server` with your actual hostname and container/service name (or IP).
-2. Double-check the `ssl_certificate`/`ssl_certificate_key` paths in the stream conf against your SWAG version - `stream {}` blocks can't use the `ssl.conf` include the HTTP proxy-conf uses, and that path has moved between SWAG releases in the past.
-3. Set `network.listener_mode = "external_tls"` and `tls.mode = "provided"` in this stack's own `config.toml` (or the equivalent `ROBOROCK_SERVER_LISTENER_MODE`/`ROBOROCK_SERVER_TLS_MODE` env vars) - the local server issues no certificates of its own in this mode.
-4. Set `network.advertised_https_port` / `network.advertised_mqtt_tls_port` to whatever public ports SWAG actually exposes, if they differ from the backend's `https_port` (555) / `mqtt_tls_port` (8881).
+```toml
+[network]
+stack_fqdn = "api-roborock.example.com"
+listener_mode = "local_tls"
+
+[tls]
+mode = "provided"
+cert_file = "/config/keys/letsencrypt/fullchain.pem"
+key_file = "/config/keys/letsencrypt/privkey.pem"
+```
+
+(Verify that cert path against your SWAG version - mount SWAG's `/config/keys/letsencrypt`
+directory, or a copy of it, into this stack's container so those paths resolve.)
+
+Publish both `https_port` (555) and `mqtt_tls_port` (8881) directly from the
+container - via your router/firewall, or a plain TCP passthrough if you
+have one - rather than through SWAG.
+
+`api-roborock.subdomain.conf` in this folder is an **optional** SWAG
+proxy-conf for the HTTPS/API side only, if you'd still like SWAG-fronted
+access to `/admin` etc. alongside the direct MQTT port. Copy it into
+`/config/nginx/proxy-confs/`, and update `api-roborock.*` and
+`roborock-local-server` to your actual hostname and container/service name.
+Since the backend already presents a real, valid cert in `local_tls` mode,
+nginx proxies to it as a normal HTTPS upstream - no stream module involved.

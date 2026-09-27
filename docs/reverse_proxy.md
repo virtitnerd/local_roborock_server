@@ -49,6 +49,8 @@ cert_file = "/path/to/proxy/fullchain.pem"
 key_file = "/path/to/proxy/privkey.pem"
 ```
 
+This is the path to use with **[SWAG](https://github.com/linuxserver/docker-swag)**, since SWAG can't proxy MQTT (see the `external_tls` caveat below). Point `cert_file`/`key_file` at a copy of SWAG's own Let's Encrypt cert (commonly under `/config/keys/letsencrypt/` in the SWAG container, but verify against your version), then publish `mqtt_tls_port` directly - no nginx involvement for that port at all, since the server now presents a real cert itself. You can still optionally front `https_port` with a normal SWAG proxy-conf (nginx proxying to it as an HTTPS upstream), or also publish that port directly. A ready-to-copy proxy-conf and full walkthrough are in [`docs/examples/swag/`](examples/swag/).
+
 ### `external_tls` — the proxy terminates TLS
 
 The proxy terminates TLS and forwards plain HTTP/TCP to the server, which holds no certificates at all. The proxy is responsible for presenting a valid cert to clients.
@@ -62,7 +64,9 @@ listener_mode = "external_tls"
 mode = "provided"
 ```
 
-Equivalent env vars: `ROBOROCK_SERVER_LISTENER_MODE=external_tls`, `ROBOROCK_SERVER_TLS_MODE=provided`. This is exactly the SWAG-style pattern (SWAG/nginx terminates TLS with its own cert and forwards plain HTTP/TCP to the container).
+Equivalent env vars: `ROBOROCK_SERVER_LISTENER_MODE=external_tls`, `ROBOROCK_SERVER_TLS_MODE=provided`.
+
+> This mode needs a proxy that can terminate TLS for *both* HTTPS and MQTT (a stream/layer-4 proxy for the latter) - `listener_mode` is a single switch covering both listeners, not one you can set per-protocol. Caddy (with the [layer4 plugin](https://github.com/mholt/caddy-l4), shown below) and Traefik can do this. **[SWAG](https://github.com/linuxserver/docker-swag) cannot out of the box** - it ships the nginx stream module but deliberately disables it and has no supported convention for stream configs, so proxying MQTT through it would mean hand-editing its `nginx.conf`. If you're using SWAG, use `local_tls` instead (see above) and publish the MQTT port directly.
 
 Requirements:
 
@@ -93,65 +97,6 @@ api-roborock.example.com {
     }
 }
 ```
-
-Example SWAG (linuxserver.io) config for the same `external_tls` setup - HTTPS via a normal proxy-conf, MQTT via SWAG's `stream-confs` (nginx `stream` block, needs a reasonably recent SWAG image):
-
-`/config/nginx/proxy-confs/api-roborock.subdomain.conf`:
-
-```nginx
-server {
-    listen 443 ssl;
-    listen [::]:443 ssl;
-
-    server_name api-roborock.*;
-
-    include /config/nginx/ssl.conf;
-
-    client_max_body_size 0;
-
-    location / {
-        include /config/nginx/proxy.conf;
-        include /config/nginx/resolver.conf;
-        set $upstream_app roborock-local-server;
-        set $upstream_port 555;
-        set $upstream_proto http;
-        proxy_pass $upstream_proto://$upstream_app:$upstream_port;
-    }
-}
-```
-
-`/config/nginx/stream-confs/api-roborock-mqtt.conf`:
-
-```nginx
-server {
-    listen 8883 ssl;
-    proxy_pass roborock-local-server:8881;
-
-    # Verify this path against your SWAG image/version - it's typically
-    # /config/keys/letsencrypt/{fullchain,privkey}.pem, but stream{} confs
-    # can't use the ssl.conf include the proxy-conf above uses.
-    ssl_certificate /config/keys/letsencrypt/fullchain.pem;
-    ssl_certificate_key /config/keys/letsencrypt/privkey.pem;
-    ssl_protocols TLSv1.2 TLSv1.3;
-}
-```
-
-Then in your local server's `config.toml` (or the equivalent `ROBOROCK_SERVER_*` env vars):
-
-```toml
-[network]
-stack_fqdn = "api-roborock.example.com"
-listener_mode = "external_tls"
-https_port = 555
-mqtt_tls_port = 8881
-advertised_https_port = 443
-advertised_mqtt_tls_port = 8883
-
-[tls]
-mode = "provided"
-```
-
-`roborock-local-server` above is the container/service name SWAG reaches it by - use your compose service name (or host/IP) instead if it differs. Ready-to-copy versions of both files, plus setup notes, are in [`docs/examples/swag/`](examples/swag/).
 
 ## Trusted Proxies and Onboarding
 
