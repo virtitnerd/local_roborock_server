@@ -38,10 +38,11 @@ def _run_entrypoint(*, compose_config: Path, data_config: Path, addon_options: P
         _exec_server(data_config)
         return
 
-    raise SystemExit(
-        "No config file found. Expected /app/config.toml, /data/config.toml, /data/options.json, "
-        "or ROBOROCK_SERVER_* environment variables (see docs/installation.md)."
-    )
+    # No config anywhere yet, and no ROBOROCK_SERVER_* env vars either.
+    # `serve` itself now handles this: it serves the Setup Wizard at /admin
+    # until /data/config.toml exists, then a container restart (Docker's
+    # restart policy) picks up the full stack once the wizard writes it.
+    _exec_server(data_config)
 
 
 def main() -> int:

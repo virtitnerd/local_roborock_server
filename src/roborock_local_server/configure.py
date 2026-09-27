@@ -46,6 +46,7 @@ class ConfigureAnswers:
     https_port: int
     mqtt_tls_port: int
     broker_mode: str
+    broker_host: str
     tls_mode: str
     base_domain: str
     email: str
@@ -205,6 +206,7 @@ def _validated_answers(answers: ConfigureAnswers) -> ConfigureAnswers:
         https_port=answers.https_port,
         mqtt_tls_port=answers.mqtt_tls_port,
         broker_mode=answers.broker_mode,
+        broker_host=answers.broker_host,
         tls_mode=answers.tls_mode,
         base_domain=answers.base_domain,
         email=answers.email,
@@ -260,6 +262,7 @@ def collect_configure_answers() -> ConfigureAnswers:
             https_port=https_port,
             mqtt_tls_port=mqtt_tls_port,
             broker_mode=broker_mode,
+            broker_host="",
             tls_mode=tls_mode,
             base_domain=base_domain,
             email=email,
@@ -300,8 +303,12 @@ def render_config_toml(answers: ConfigureAnswers) -> str:
     else:
         lines.extend(
             [
-                "# Fill this in with your existing MQTT broker hostname or IP before starting the stack.",
-                'host = ""',
+                *(
+                    ["# Fill this in with your existing MQTT broker hostname or IP before starting the stack."]
+                    if not answers.broker_host
+                    else []
+                ),
+                f"host = {_toml_string(answers.broker_host)}",
                 "port = 1883",
                 'mosquitto_binary = "mosquitto"',
                 "enable_topic_bridge = true",
@@ -426,7 +433,7 @@ def write_config_setup(
         cloudflare_token_file=written_token_path,
         actalis_eab_kid_file=written_actalis_kid_path,
         actalis_eab_hmac_key_file=written_actalis_hmac_path,
-        broker_template_needs_edit=answers.broker_mode == "external",
+        broker_template_needs_edit=answers.broker_mode == "external" and not answers.broker_host,
     )
 
 
