@@ -50,7 +50,7 @@ schema:
   tls_mode: list(provided|cloudflare_acme)
   tls_base_domain: str
   tls_email: str
-  acme_server: list(zerossl|actalis)
+  acme_server: list(zerossl|actalis|letsencrypt|sslcom)
   acme_eab_kid: str
   acme_eab_hmac_key: password
   cloudflare_token: str
