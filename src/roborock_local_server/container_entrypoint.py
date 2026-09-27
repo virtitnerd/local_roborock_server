@@ -28,13 +28,11 @@ def _run_entrypoint(*, compose_config: Path, data_config: Path, addon_options: P
         _exec_server(data_config)
         return
 
-    if data_config.exists():
-        _exec_server(data_config)
-        return
-
-    raise SystemExit(
-        "No config file found. Expected /app/config.toml, /data/config.toml, or /data/options.json."
-    )
+    # No config anywhere yet. `serve` itself now handles this: it serves the
+    # setup wizard on the management port until /data/config.toml exists,
+    # then a container restart (Docker's restart policy) picks up the full
+    # stack once the wizard writes it.
+    _exec_server(data_config)
 
 
 def main() -> int:

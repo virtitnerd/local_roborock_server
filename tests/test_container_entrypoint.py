@@ -65,3 +65,27 @@ def test_run_entrypoint_prefers_compose_config_when_present(
     )
 
     assert calls == [compose_config]
+
+
+def test_run_entrypoint_execs_server_even_without_any_config_present(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    compose_config = tmp_path / "app-config.toml"
+    data_config = tmp_path / "data-config.toml"
+    addon_options = tmp_path / "options.json"
+
+    calls: list[Path] = []
+    monkeypatch.setattr(
+        container_entrypoint,
+        "_exec_server",
+        lambda config_path: calls.append(config_path),
+    )
+
+    container_entrypoint._run_entrypoint(
+        compose_config=compose_config,
+        data_config=data_config,
+        addon_options=addon_options,
+    )
+
+    assert calls == [data_config]
