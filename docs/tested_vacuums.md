@@ -2,7 +2,7 @@
 
 Check this page alongside [Installation](installation.md) and [Onboarding](onboarding.md) if you are trying to confirm whether your model is expected to work.
 
-For most users, start with ZeroSSL. Actalis is mainly recommended for older vacuums or for models that already have reports showing better compatibility with the Actalis chain. Results below apply to the reported firmware and certificate chain; other versions or chains may behave differently.
+For most users, start with ZeroSSL. Actalis, Let's Encrypt, and SSL.com are all supported ACME CAs too (see [Cloudflare setup](cloudflare_setup.md)) - use one of them for a specific model if the reports below show better compatibility with that chain. Results below apply to the reported firmware and certificate chain; other versions or chains may behave differently.
 
 ## Buying a New Vacuum?
 

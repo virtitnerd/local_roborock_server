@@ -1,19 +1,19 @@
 # Cloudflare setup
 
-Use this optional guide if you want Cloudflare DNS-01 certificate issuance and automatic renewal during [Installation](installation.md). Before choosing this path, check [Tested Vacuums](tested_vacuums.md) to confirm whether your model should start with `zerossl` or `actalis`. In most cases, prefer `zerossl`; use `actalis` mainly for older vacuums or when the tested-vacuum notes point you there. If you would rather provide your own certificate files, see [Custom certificate management](custom_cert_management.md).
+Use this optional guide if you want Cloudflare DNS-01 certificate issuance and automatic renewal during [Installation](installation.md). Before choosing this path, check [Tested Vacuums](tested_vacuums.md) to confirm which ACME CA your model should start with. In most cases, prefer `zerossl`; use `actalis`, `letsencrypt`, or `sslcom` when the tested-vacuum notes point you there. If you would rather provide your own certificate files, see [Custom certificate management](custom_cert_management.md).
 
-Cloudflare is used for DNS-01 validation against your zone so that the stack can request and renew certificates automatically. The ACME CA is configurable. The default and recommended choice for most users is ZeroSSL, and any deployment can switch to `actalis` if an older vacuum trusts that chain more reliably.
+Cloudflare is used for DNS-01 validation against your zone so that the stack can request and renew certificates automatically. The ACME CA is configurable (`tls.acme_server`): `zerossl` (default and recommended for most users), `actalis`, `letsencrypt`, or `sslcom`. Switch away from ZeroSSL if an older vacuum trusts a different chain more reliably - see [Tested Vacuums](tested_vacuums.md) for reported results per CA.
 
 DNS-01 validation only needs permission to create temporary TXT records in Cloudflare. It does not make the service reachable from the internet by itself, and local-only setups do not need public inbound access, public port forwarding, or Cloudflare proxying for the stack hostname.
 
-If you choose `acme_server = actalis`, you must also provide `acme_eab_kid` and `acme_eab_hmac_key` from your Actalis ACME account. Generated configs store those in separate secret files instead of embedding them directly in `config.toml`.
+If you choose `acme_server = actalis` or `acme_server = sslcom`, you must also provide `acme_eab_kid` and `acme_eab_hmac_key` (EAB credentials) from that CA's ACME account - both require External Account Binding to register. `zerossl` and `letsencrypt` need no EAB credentials at all. Generated configs store EAB values in separate secret files instead of embedding them directly in `config.toml`.
 
-Actalis provides the EAB KID and HMAC key from its ACME account setup. Create or sign in to an Actalis ACME account first, then copy both EAB values into the setup wizard or Home Assistant add-on options.
+Actalis and SSL.com both provide the EAB KID and HMAC key from their own ACME account setup pages. Create or sign in to an account with that CA first, then copy both EAB values into the setup wizard or Home Assistant add-on options.
 
 The automated issuance shape differs by ACME CA:
 
-- `zerossl` requests `base_domain` plus `*.base_domain`
-- `actalis` requests only `stack_fqdn`
+- `zerossl`, `letsencrypt`, and `sslcom` request `base_domain` plus `*.base_domain` (a wildcard cert)
+- `actalis` requests only `stack_fqdn` (no wildcard) - this is a reported limitation specific to Actalis's EAB account tier, not a general restriction. We don't have field reports confirming SSL.com's wildcard behavior either way yet; if it turns out to need the same single-domain treatment, please open an issue.
 
 ## Create the Cloudflare Token
 
