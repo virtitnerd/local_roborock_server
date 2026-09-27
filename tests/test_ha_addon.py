@@ -371,7 +371,7 @@ def test_write_config_from_home_assistant_options_rejects_invalid_acme_server(tm
         },
     )
 
-    with pytest.raises(ValueError, match="acme_server must be 'zerossl' or 'actalis'"):
+    with pytest.raises(ValueError, match="acme_server must be one of: zerossl, actalis, letsencrypt, sslcom"):
         write_config_from_home_assistant_options(
             options_path=options_path,
             config_path=config_path,
@@ -581,3 +581,98 @@ def test_empty_generated_turn_password_is_replaced_atomically(tmp_path, monkeypa
     write_config_from_home_assistant_options(options_path=options_path, config_path=tmp_path / "config.toml")
     assert replacements == [password_path]
     assert len(password_path.read_text()) >= 32
+
+
+def test_write_config_from_home_assistant_options_accepts_letsencrypt(tmp_path: Path) -> None:
+    options_path = tmp_path / "options.json"
+    config_path = tmp_path / "config.toml"
+    token_path = tmp_path / "run" / "secrets" / "cloudflare_token"
+
+    _write_options(
+        options_path,
+        {
+            "stack_fqdn": "api-roborock.example.com",
+            "tls_mode": "cloudflare_acme",
+            "tls_base_domain": "example.com",
+            "tls_email": "acme@example.com",
+            "acme_server": "letsencrypt",
+            "cloudflare_token": "cloudflare-token-123",
+            "admin_password": "secret",
+            "protocol_login_email": "user@example.com",
+            "protocol_login_pin": "654321",
+        },
+    )
+
+    write_config_from_home_assistant_options(
+        options_path=options_path,
+        config_path=config_path,
+        cloudflare_token_path=token_path,
+    )
+
+    parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert parsed["tls"]["acme_server"] == "letsencrypt"
+    assert parsed["tls"]["acme_eab_kid_file"] == ""
+
+
+def test_write_config_from_home_assistant_options_sslcom_requires_eab(tmp_path: Path) -> None:
+    options_path = tmp_path / "options.json"
+    config_path = tmp_path / "config.toml"
+
+    _write_options(
+        options_path,
+        {
+            "stack_fqdn": "api-roborock.example.com",
+            "tls_mode": "cloudflare_acme",
+            "tls_base_domain": "example.com",
+            "tls_email": "acme@example.com",
+            "acme_server": "sslcom",
+            "cloudflare_token": "cloudflare-token-123",
+            "admin_password": "secret",
+            "protocol_login_email": "user@example.com",
+            "protocol_login_pin": "654321",
+        },
+    )
+
+    with pytest.raises(ValueError, match="acme_eab_kid is required"):
+        write_config_from_home_assistant_options(
+            options_path=options_path,
+            config_path=config_path,
+        )
+
+
+def test_write_config_from_home_assistant_options_sslcom_writes_eab(tmp_path: Path) -> None:
+    options_path = tmp_path / "options.json"
+    config_path = tmp_path / "config.toml"
+    token_path = tmp_path / "run" / "secrets" / "cloudflare_token"
+    kid_path = tmp_path / "run" / "secrets" / "acme_eab_kid"
+    hmac_path = tmp_path / "run" / "secrets" / "acme_eab_hmac_key"
+
+    _write_options(
+        options_path,
+        {
+            "stack_fqdn": "api-roborock.example.com",
+            "tls_mode": "cloudflare_acme",
+            "tls_base_domain": "example.com",
+            "tls_email": "acme@example.com",
+            "acme_server": "sslcom",
+            "acme_eab_kid": "kid-999",
+            "acme_eab_hmac_key": "hmac-999",
+            "cloudflare_token": "cloudflare-token-123",
+            "admin_password": "secret",
+            "protocol_login_email": "user@example.com",
+            "protocol_login_pin": "654321",
+        },
+    )
+
+    write_config_from_home_assistant_options(
+        options_path=options_path,
+        config_path=config_path,
+        cloudflare_token_path=token_path,
+        acme_eab_kid_path=kid_path,
+        acme_eab_hmac_key_path=hmac_path,
+    )
+
+    parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    assert parsed["tls"]["acme_server"] == "sslcom"
+    assert parsed["tls"]["acme_eab_kid_file"] == str(kid_path)
+    assert kid_path.read_text(encoding="utf-8") == "kid-999"
