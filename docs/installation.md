@@ -120,8 +120,8 @@ If your model already has certificate notes on the tested-vacuums page, follow t
    - HTTPS and MQTT TLS ports if you do not want the defaults `555` and `8881`
    - embedded MQTT or your own broker
    - whether to use Cloudflare DNS-01 auto-renew
-   - if you chose Cloudflare, the ACME account email and whether to use ZeroSSL or Actalis. In most cases, choose ZeroSSL unless you are targeting an older vacuum.
-   - if you chose Actalis, the Actalis EAB KID and EAB HMAC key
+   - if you chose Cloudflare, the ACME account email and which CA to use: ZeroSSL, Actalis, Let's Encrypt, or SSL.com. In most cases, choose ZeroSSL unless you are targeting an older vacuum or a specific model's compatibility report points elsewhere.
+   - if you chose Actalis or SSL.com, that CA's EAB KID and EAB HMAC key (both require External Account Binding; ZeroSSL and Let's Encrypt do not)
    - your admin password
    - your Home Assistant/app login email and 6-digit PIN
 
