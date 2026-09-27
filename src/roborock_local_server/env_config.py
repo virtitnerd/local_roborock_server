@@ -26,6 +26,7 @@ import tomllib
 from typing import Mapping
 from urllib.parse import urlsplit
 
+from .config import ACME_SERVER_DISPLAY_NAMES, ACME_SERVERS, ACME_SERVERS_REQUIRING_EAB
 from .configure import hash_password
 
 ENV_PREFIX = "ROBOROCK_SERVER_"
@@ -137,8 +138,8 @@ def _require_pin(value: str, *, field_name: str) -> str:
 
 def _normalize_acme_server(value: str) -> str:
     normalized = value.strip().lower() or "zerossl"
-    if normalized not in {"zerossl", "actalis"}:
-        raise ValueError(f"{ENV_PREFIX}ACME_SERVER must be 'zerossl' or 'actalis'")
+    if normalized not in ACME_SERVERS:
+        raise ValueError(f"{ENV_PREFIX}ACME_SERVER must be one of: {', '.join(ACME_SERVERS)}")
     return normalized
 
 
@@ -247,16 +248,17 @@ def render_config_toml_from_env(
                     f"when {ENV_PREFIX}TLS_MODE='cloudflare_acme'"
                 )
 
-            if acme_server == "actalis":
+            if acme_server in ACME_SERVERS_REQUIRING_EAB:
+                display_name = ACME_SERVER_DISPLAY_NAMES.get(acme_server, acme_server)
                 eab_kid_file_override = _get(env, "ACME_EAB_KID_FILE")
                 eab_kid = _get(env, "ACME_EAB_KID")
                 eab_hmac_file_override = _get(env, "ACME_EAB_HMAC_KEY_FILE")
                 eab_hmac = _get(env, "ACME_EAB_HMAC_KEY")
                 if not (eab_kid_file_override or eab_kid):
-                    raise ValueError(f"Actalis requires {ENV_PREFIX}ACME_EAB_KID or {ENV_PREFIX}ACME_EAB_KID_FILE")
+                    raise ValueError(f"{display_name} requires {ENV_PREFIX}ACME_EAB_KID or {ENV_PREFIX}ACME_EAB_KID_FILE")
                 if not (eab_hmac_file_override or eab_hmac):
                     raise ValueError(
-                        f"Actalis requires {ENV_PREFIX}ACME_EAB_HMAC_KEY or {ENV_PREFIX}ACME_EAB_HMAC_KEY_FILE"
+                        f"{display_name} requires {ENV_PREFIX}ACME_EAB_HMAC_KEY or {ENV_PREFIX}ACME_EAB_HMAC_KEY_FILE"
                     )
                 acme_eab_kid_file = eab_kid_file_override or str(secret_paths.acme_eab_kid_file)
                 if not eab_kid_file_override:
