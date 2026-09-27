@@ -94,6 +94,65 @@ api-roborock.example.com {
 }
 ```
 
+Example SWAG (linuxserver.io) config for the same `external_tls` setup - HTTPS via a normal proxy-conf, MQTT via SWAG's `stream-confs` (nginx `stream` block, needs a reasonably recent SWAG image):
+
+`/config/nginx/proxy-confs/api-roborock.subdomain.conf`:
+
+```nginx
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+
+    server_name api-roborock.*;
+
+    include /config/nginx/ssl.conf;
+
+    client_max_body_size 0;
+
+    location / {
+        include /config/nginx/proxy.conf;
+        include /config/nginx/resolver.conf;
+        set $upstream_app roborock-local-server;
+        set $upstream_port 555;
+        set $upstream_proto http;
+        proxy_pass $upstream_proto://$upstream_app:$upstream_port;
+    }
+}
+```
+
+`/config/nginx/stream-confs/api-roborock-mqtt.conf`:
+
+```nginx
+server {
+    listen 8883 ssl;
+    proxy_pass roborock-local-server:8881;
+
+    # Verify this path against your SWAG image/version - it's typically
+    # /config/keys/letsencrypt/{fullchain,privkey}.pem, but stream{} confs
+    # can't use the ssl.conf include the proxy-conf above uses.
+    ssl_certificate /config/keys/letsencrypt/fullchain.pem;
+    ssl_certificate_key /config/keys/letsencrypt/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+}
+```
+
+Then in your local server's `config.toml` (or the equivalent `ROBOROCK_SERVER_*` env vars):
+
+```toml
+[network]
+stack_fqdn = "api-roborock.example.com"
+listener_mode = "external_tls"
+https_port = 555
+mqtt_tls_port = 8881
+advertised_https_port = 443
+advertised_mqtt_tls_port = 8883
+
+[tls]
+mode = "provided"
+```
+
+`roborock-local-server` above is the container/service name SWAG reaches it by - use your compose service name (or host/IP) instead if it differs. Ready-to-copy versions of both files, plus setup notes, are in [`docs/examples/swag/`](examples/swag/).
+
 ## Trusted Proxies and Onboarding
 
 When onboarding a new vacuum, the server links its MQTT login to the `/region` and `/nc` HTTP requests that came just before it. It does this by checking that both came from the same IP address. With a proxy in front of the server, that check fails: the HTTP requests show the proxy's address and MQTT may show a different one (e.g. a Kubernetes node doing SNAT).
