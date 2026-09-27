@@ -12,7 +12,7 @@ from typing import Iterable
 
 from cryptography import x509
 
-from .config import AppConfig, AppPaths
+from .config import ACME_SERVERS_REQUIRING_EAB, ACME_SERVER_DISPLAY_NAMES, AppConfig, AppPaths
 
 
 LOG = logging.getLogger("roborock_local_server.certs")
@@ -78,9 +78,10 @@ class CertificateManager:
         hmac_key = self.config.tls.acme_eab_hmac_key or self._read_optional_secret_file(self.paths.acme_eab_hmac_key_file)
         if bool(kid) != bool(hmac_key):
             raise RuntimeError("ACME EAB credentials are incomplete; both KID and HMAC key are required")
-        if self.config.tls.acme_server == "actalis" and not kid:
+        if self.config.tls.acme_server in ACME_SERVERS_REQUIRING_EAB and not kid:
+            display_name = ACME_SERVER_DISPLAY_NAMES.get(self.config.tls.acme_server, self.config.tls.acme_server)
             raise RuntimeError(
-                "Actalis ACME requires EAB credentials. "
+                f"{display_name} ACME requires EAB credentials. "
                 f"Checked inline config plus {self.paths.acme_eab_kid_file} and {self.paths.acme_eab_hmac_key_file}."
             )
         return kid, hmac_key
@@ -199,6 +200,13 @@ class CertificateManager:
             raise RuntimeError("ACME completed without writing certificate files")
 
     def _certificate_domains(self) -> tuple[str, list[str]]:
+        # Actalis specifically has been reported not to support wildcard SAN
+        # certs via DNS-01 on the account tier this project's EAB flow uses,
+        # so it gets a single-domain (stack_fqdn only) cert instead. That's
+        # an Actalis-specific finding, not a general EAB-CA limitation - Let's
+        # Encrypt and ZeroSSL both support wildcards without issue, and we
+        # don't have confirmation either way for SSL.com, so new CAs default
+        # to the normal wildcard shape unless a report says otherwise.
         if self.config.tls.acme_server == "actalis":
             stack_fqdn = self.config.network.stack_fqdn
             return stack_fqdn, [stack_fqdn]

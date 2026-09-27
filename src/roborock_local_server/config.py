@@ -141,10 +141,16 @@ def _normalize_hostname(value: object, field_name: str, *, require_api_prefix: b
     return normalized
 
 
+ACME_SERVERS = ("zerossl", "actalis", "letsencrypt", "sslcom")
+# CAs that require EAB (External Account Binding) credentials to register.
+ACME_SERVERS_REQUIRING_EAB = ("actalis", "sslcom")
+ACME_SERVER_DISPLAY_NAMES = {"actalis": "Actalis", "sslcom": "SSL.com"}
+
+
 def _normalize_acme_server(value: object, field_name: str) -> str:
     normalized = str(value or "").strip().lower() or "zerossl"
-    if normalized not in {"zerossl", "actalis"}:
-        raise ValueError(f"{field_name} must be 'zerossl' or 'actalis'")
+    if normalized not in ACME_SERVERS:
+        raise ValueError(f"{field_name} must be one of: {', '.join(ACME_SERVERS)}")
     return normalized
 
 
@@ -321,10 +327,11 @@ def _load_network_broker_storage_tls(
                     "tls.acme_eab_kid/tls.acme_eab_kid_file and "
                     "tls.acme_eab_hmac_key/tls.acme_eab_hmac_key_file must be set together"
                 )
-            if tls_config.acme_server == "actalis":
+            if tls_config.acme_server in ACME_SERVERS_REQUIRING_EAB:
                 if not has_kid:
+                    display_name = ACME_SERVER_DISPLAY_NAMES.get(tls_config.acme_server, tls_config.acme_server)
                     raise ValueError(
-                        "Actalis requires tls.acme_eab_kid or tls.acme_eab_kid_file, "
+                        f"{display_name} requires tls.acme_eab_kid or tls.acme_eab_kid_file, "
                         "and tls.acme_eab_hmac_key or tls.acme_eab_hmac_key_file"
                     )
         else:
