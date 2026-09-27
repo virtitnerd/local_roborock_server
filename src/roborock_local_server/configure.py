@@ -176,6 +176,17 @@ def _prompt_yes_no(prompt: str, *, default: bool) -> bool:
         print("Please answer yes or no.")
 
 
+def _prompt_choice(prompt: str, *, choices: tuple[str, ...], default: str) -> str:
+    choice_list = "/".join(choice.upper() if choice == default else choice for choice in choices)
+    while True:
+        raw_value = input(f"{prompt} [{choice_list}]: ").strip().lower()
+        if not raw_value:
+            return default
+        if raw_value in choices:
+            return raw_value
+        print(f"Please enter one of: {', '.join(choices)}.")
+
+
 def _prompt_password() -> str:
     return _prompt_non_empty_secret("Admin password (input hidden): ")
 
@@ -210,18 +221,25 @@ def _prompt_protocol_login_pin() -> str:
         return normalized_pin
 
 
+ACME_SERVERS = ("zerossl", "actalis", "letsencrypt", "sslcom")
+# CAs that require EAB (External Account Binding) credentials to register.
+ACME_SERVERS_REQUIRING_EAB = ("actalis", "sslcom")
+ACME_SERVER_DISPLAY_NAMES = {"actalis": "Actalis", "sslcom": "SSL.com"}
+
+
 def _normalize_acme_server(value: str) -> str:
     normalized = str(value or "").strip().lower() or "zerossl"
-    if normalized not in {"zerossl", "actalis"}:
-        raise ValueError("acme_server must be 'zerossl' or 'actalis'")
+    if normalized not in ACME_SERVERS:
+        raise ValueError(f"acme_server must be one of: {', '.join(ACME_SERVERS)}")
     return normalized
 
 
 def _validated_answers(answers: ConfigureAnswers) -> ConfigureAnswers:
     normalized_acme_server = _normalize_acme_server(answers.acme_server)
-    if answers.tls_mode == "cloudflare_acme" and normalized_acme_server == "actalis":
+    if answers.tls_mode == "cloudflare_acme" and normalized_acme_server in ACME_SERVERS_REQUIRING_EAB:
         if not answers.acme_eab_kid.strip() or not answers.acme_eab_hmac_key.strip():
-            raise ValueError("Actalis requires both acme_eab_kid and acme_eab_hmac_key")
+            display_name = ACME_SERVER_DISPLAY_NAMES.get(normalized_acme_server, normalized_acme_server)
+            raise ValueError(f"{display_name} requires both acme_eab_kid and acme_eab_hmac_key")
     return ConfigureAnswers(
         stack_fqdn=answers.stack_fqdn,
         https_port=answers.https_port,
@@ -267,10 +285,15 @@ def collect_configure_answers() -> ConfigureAnswers:
             field_name="tls.base_domain",
         )
         email = _prompt_non_empty("Email for the ACME account: ")
-        acme_server = "actalis" if _prompt_yes_no("Use Actalis instead of ZeroSSL as the ACME CA?", default=False) else "zerossl"
-        if acme_server == "actalis":
-            acme_eab_kid = _prompt_non_empty("Actalis EAB KID: ")
-            acme_eab_hmac_key = _prompt_non_empty_secret("Actalis EAB HMAC key (input hidden): ")
+        acme_server = _prompt_choice(
+            "Certificate authority (zerossl/actalis/letsencrypt/sslcom)",
+            choices=ACME_SERVERS,
+            default="zerossl",
+        )
+        if acme_server in ACME_SERVERS_REQUIRING_EAB:
+            display_name = ACME_SERVER_DISPLAY_NAMES.get(acme_server, acme_server)
+            acme_eab_kid = _prompt_non_empty(f"{display_name} EAB KID: ")
+            acme_eab_hmac_key = _prompt_non_empty_secret(f"{display_name} EAB HMAC key (input hidden): ")
         cloudflare_token = _prompt_non_empty_secret("Cloudflare API token (input hidden): ")
 
     password = _prompt_password()
@@ -351,8 +374,8 @@ def render_config_toml(answers: ConfigureAnswers) -> str:
                 f"acme_server = {_toml_string(answers.acme_server)}",
                 'acme_eab_kid = ""',
                 'acme_eab_hmac_key = ""',
-                f"acme_eab_kid_file = {_toml_string(_ACTALIS_EAB_KID_CONTAINER_PATH if answers.acme_server == 'actalis' else '')}",
-                f"acme_eab_hmac_key_file = {_toml_string(_ACTALIS_EAB_HMAC_KEY_CONTAINER_PATH if answers.acme_server == 'actalis' else '')}",
+                f"acme_eab_kid_file = {_toml_string(_ACTALIS_EAB_KID_CONTAINER_PATH if answers.acme_server in ACME_SERVERS_REQUIRING_EAB else '')}",
+                f"acme_eab_hmac_key_file = {_toml_string(_ACTALIS_EAB_HMAC_KEY_CONTAINER_PATH if answers.acme_server in ACME_SERVERS_REQUIRING_EAB else '')}",
             ]
         )
     else:
@@ -405,7 +428,7 @@ def write_config_setup(
     protected_paths = [config_path]
     if answers.tls_mode == "cloudflare_acme":
         protected_paths.append(token_path)
-        if answers.acme_server == "actalis":
+        if answers.acme_server in ACME_SERVERS_REQUIRING_EAB:
             protected_paths.extend([actalis_kid_path, actalis_hmac_path])
 
     if not force:
@@ -426,7 +449,7 @@ def write_config_setup(
         if os.name != "nt":
             token_path.chmod(0o600)
         written_token_path = token_path
-        if answers.acme_server == "actalis":
+        if answers.acme_server in ACME_SERVERS_REQUIRING_EAB:
             actalis_kid_path.write_text(answers.acme_eab_kid, encoding="utf-8")
             actalis_hmac_path.write_text(answers.acme_eab_hmac_key, encoding="utf-8")
             if os.name != "nt":
