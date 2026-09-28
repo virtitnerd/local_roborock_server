@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 import logging
 import os
 from pathlib import Path
+import re
 import subprocess
 from typing import Iterable
 
@@ -130,6 +131,33 @@ class CertificateManager:
         expected_domains = {domain.strip().lower() for domain in issue_domains if domain.strip()}
         return actual_domains == expected_domains
 
+    _ACME_FAILURE_HINTS: tuple[tuple[re.Pattern[str], str], ...] = (
+        (
+            re.compile(r"retryafter=\d+ value is too large"),
+            (
+                "the CA reported an unusually long Retry-After while your order was still "
+                "'processing', and acme.sh gave up rather than wait that long (it caps out at "
+                "600 seconds). This is CA-side congestion, not a problem with this config - "
+                "retry later, or switch tls.acme_server to a different CA."
+            ),
+        ),
+        (
+            re.compile(r"curl.*error code: [67]\b"),
+            (
+                "acme.sh could not connect to the CA or DNS provider's API (curl connection/DNS "
+                "resolve failure). Usually transient - check the container's outbound DNS/network "
+                "at boot, or just retry."
+            ),
+        ),
+    )
+
+    @classmethod
+    def _acme_failure_hint(cls, stdout: str) -> str | None:
+        for pattern, hint in cls._ACME_FAILURE_HINTS:
+            if pattern.search(stdout):
+                return hint
+        return None
+
     def _run_acme(self, args: Iterable[str]) -> None:
         self.paths.acme_dir.mkdir(parents=True, exist_ok=True)
         if not ACME_SH_PATH.exists():
@@ -161,7 +189,11 @@ class CertificateManager:
             LOG.info("ACME command skipped because certificate renewal is not due: %s", display_command)
             return
         if result.returncode != 0:
-            raise RuntimeError(f"ACME command failed ({result.returncode}): {display_command}")
+            hint = self._acme_failure_hint(result.stdout)
+            message = f"ACME command failed ({result.returncode}): {display_command}"
+            if hint:
+                message = f"{message}\n{hint}"
+            raise RuntimeError(message)
 
     def _provision_or_renew(self) -> None:
         self.paths.certs_dir.mkdir(parents=True, exist_ok=True)
