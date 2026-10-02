@@ -82,12 +82,12 @@ uv run start_onboarding.py --server api-roborock.example.com --ssid "My Wifi" --
 
 The `country-domain` parameter sets the regional/country domain code inside the Roborock Wi-Fi pairing payload (`"country_domain": ...`).
 
-- **Auto-detection**: If your IANA timezone is in the script's built-in table (such as US timezones, London, Berlin, Paris, Amsterdam, Tokyo, Sydney), both `cst` and `country-domain` are auto-detected.
-- **Unlisted timezones**: If you enter a timezone that is not in the built-in table (for example `Europe/Vienna`, `Europe/Zurich`, `Europe/Rome`, etc.), the script cannot infer the country code and will prompt:
+- **Auto-detection**: If your IANA timezone is in the script's built-in table (such as US timezones, London, Berlin, Paris, Amsterdam, Vienna, Rome, Madrid, Warsaw, Stockholm, Zurich, Brussels, Moscow, Tokyo, Sydney), both `cst` and `country-domain` are auto-detected (mapping European timezones to `eu` and Russian timezones to `ru`).
+- **Unlisted timezones**: If you enter an unlisted European timezone (e.g. `Europe/Dublin`), the script defaults the country domain to `eu` and prompts for the POSIX `cst` string. If the timezone is completely unmapped, it prompts for both:
   ```text
   Country domain (could not auto-detect from timezone) [us]:
   ```
-- **What to enter**: You can enter either your two-letter ISO country code (e.g. `at`, `de`, `ch`, `gb`, `us`) or your broader region code (e.g. `eu`, `us`). Both are accepted by Roborock vacuum firmware.
+- **What to enter**: Roborock's cloud regional domains are `eu`, `us`, `cn`, and `ru`. For European users, use `eu`.
 
 ## CST Examples
 
@@ -175,6 +175,7 @@ Everything in "What To Expect" above still applies. Some vacuums need 2-4 cycles
 - **"No known vacuums are available for onboarding."** Go back and finish the cloud import/fetch-data step first so the server has the vacuum inventory.
 - **"Could not reach the server after leaving the vacuum hotspot."** Your machine did not rejoin your normal Wi-Fi within two minutes. Check your network and click Retry.
 - **The UI is stuck on "Polling...".** Give it the full five-minute timeout. Some vacuums are especially slow on the final cycle after the public key is already ready. If nothing changes, check the log pane for errors, then click Retry or Pick another vacuum.
+- **Server stalls or hangs during key recovery without errors.** Check your container host's resource usage. If running with tight CPU/memory limits, cryptographic recovery can max out resources and hang. Ensure the container has at least 1 CPU core and 1 GB RAM allocated. On lower resource machines, be prepared to wait longer for the public key to be determined.
 
 ---
  
