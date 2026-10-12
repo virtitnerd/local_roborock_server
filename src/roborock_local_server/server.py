@@ -1477,9 +1477,11 @@ class ReleaseSupervisor:
             # /nc just handed the vacuum its localKey; persist now instead of relying on an
             # onboarding client still polling the session (it may have timed out or exited).
             self.persist_active_onboarding_device()
-        if route_name != "catchall":
-            # Truly unmatched requests (favicon probes, health checks, random scans) aren't
-            # meaningful onboarding/protocol activity - keep them out of the Activity feed.
+        if route_name != "catchall" or request.method.upper() not in {"GET", "HEAD", "OPTIONS"} or explicit_did:
+            # Plain GET/HEAD probes nobody handles (favicons, health checks, scans) aren't
+            # meaningful activity and stay out of the feed. An unmatched request that writes
+            # (POST/PUT/...) or names a device is exactly what to look at when a robot starts
+            # sending something this server has no handler for, so those are kept.
             append_jsonl(self.context.http_jsonl, entry)
         if key_cache is not None and key_capture_did:
             try:
