@@ -33,6 +33,7 @@ from .bundled_backend.shared.runtime_state import ONBOARDING_STEP_LABELS, REQUIR
 from .cloud import CloudImportManager
 from .config import AppConfig, AppPaths, load_config, resolve_paths
 from .management_app import bootstrap_port_from_env, create_management_app
+from .turn_relay import EmbeddedTurnRelay
 from .standalone_admin import register_standalone_admin_routes
 from .backend import (
     MqttTlsProxy,
@@ -53,7 +54,9 @@ from .backend import (
     start_broker,
     strip_roborock_prefix,
 )
+from shared.inventory_io import atomic_write_inventory, inventory_transaction
 from shared.protocol_auth import ProtocolAuthStore
+from https_server.routes.user.scene import validity as scene_validity
 from https_server.routes.auth.service import (
     build_login_data_response,
     cloud_login_data_required_response,
@@ -357,6 +360,7 @@ class ReleaseSupervisor:
             self.root_logger.addHandler(handler)
 
         self._broker: Any | None = None
+        self._turn_relay = EmbeddedTurnRelay(config.turn, paths.state_dir / "turn_relay")
         self._topic_bridge: MqttTopicBridge | None = None
         self._mqtt_proxy: MqttTlsProxy | None = None
         self._http_server: ManagedFastApiServer | None = None
@@ -466,6 +470,13 @@ class ReleaseSupervisor:
             runtime_credentials=self.runtime_credentials,
             zone_ranges_store=self._init_zone_ranges_store(),
             timezone=self.config.network.timezone or None,
+            turn_enabled=self.config.turn.mode != "disabled",
+            turn_host=self.config.turn.host or self.config.network.stack_fqdn,
+            turn_port=self.config.turn.port,
+            turn_username=self.config.turn.username,
+            turn_password=self.config.turn.password,
+            turn_realm=self.config.turn.realm or self.config.turn.host or self.config.network.stack_fqdn,
+            turn_ttl=self.config.turn.ttl,
         )
         self.endpoint_rules = default_endpoint_rules()
         self.app = self._create_app()
@@ -981,6 +992,7 @@ class ReleaseSupervisor:
                 body_params,
                 "code",
                 "verifyCode",
+                "verifycode",
                 "emailCode",
                 "smsCode",
             )
@@ -1312,6 +1324,8 @@ class ReleaseSupervisor:
             if not authenticated:
                 route_name = f"{required_auth}_auth_failed"
                 status_code, response_payload = self._protocol_auth_failure_response(auth_reason, required_auth)
+                if scene_validity.match(clean_path, request.method):
+                    response_payload = scene_validity.error_response(unauthorized=True)
                 entry["route"] = route_name
                 entry["response_json"] = response_payload
                 try:
@@ -1431,7 +1445,15 @@ class ReleaseSupervisor:
             method=request.method,
         )
         entry["route"] = route_name
-        entry["response_json"] = response_payload
+        if route_name == "fw_createca":
+            # Persist metadata, but retain the exact credential response sent to firmware.
+            entry["response_json"] = {
+                key: ({field: "<redacted>" if field in {"pwd", "credential"} else value
+                       for field, value in part.items()} if isinstance(part, dict) else part)
+                for key, part in response_payload.items()
+            }
+        else:
+            entry["response_json"] = response_payload
         try:
             self.runtime_state.record_http_event(
                 event_time=str(entry["time"]),
@@ -1470,15 +1492,27 @@ class ReleaseSupervisor:
             route_name,
             body_sha256[:16],
         )
-        return JSONResponse(response_payload)
+        status_code = 400 if route_name == "put_scene_validity" and response_payload.get("status") == "BAD_REQUEST" else 200
+        return JSONResponse(response_payload, status_code=status_code)
+
+    def _refresh_turn_health(self) -> None:
+        if self.config.turn.mode != "provided":
+            return
+        self.runtime_state.set_service(
+            "turn_relay", running=self._turn_relay.running,
+            required=self.config.turn.mode == "provided", enabled=self.config.turn.mode == "provided",
+            detail=f"udp:{self.config.turn.host}:{self.config.turn.port}",
+        )
 
     def _status_payload(self) -> dict[str, Any]:
+        self._refresh_turn_health()
         health = self.runtime_state.health_snapshot()
         merged_vacuums = self._vacuums_payload()["vacuums"]
         health["all_vacuums"] = merged_vacuums
         health["connected_vacuums"] = [vac for vac in merged_vacuums if vac.get("connected")]
         return {
             "health": health,
+            "turn": {"mode": self.config.turn.mode, "host": self.config.turn.host, "port": self.config.turn.port},
             "auth": self._auth_payload(),
             "pairing": self.runtime_state.pairing_snapshot(),
             "support": PROJECT_SUPPORT,
@@ -1754,97 +1788,92 @@ class ReleaseSupervisor:
         product_id: str,
         local_key: str,
     ) -> bool:
-        inventory_id = (duid or did).strip()
-        if not inventory_id:
-            return False
-        inventory = _load_inventory(self.paths.inventory_path)
-        devices = inventory.get("devices")
-        if not isinstance(devices, list):
-            devices = []
-        identifiers = {value for value in (inventory_id, did, duid) if value}
-        meta = resolve_product_metadata(
-            model=model,
-            custom_name=name,
-            custom_registry_path=self.paths.runtime_dir / "product_registry.custom.json",
-        )
-        resolved_name = meta["product_name"]
-        resolved_model = meta["model"]
-        resolved_category = meta["category"]
-        resolved_product_id = product_id or meta["product_id"]
-        resolved_schema = meta["schema"]
-
-        for existing in devices:
-            if not isinstance(existing, dict):
-                continue
-            existing_ids = {
-                str(existing.get(key) or "").strip()
-                for key in ("duid", "did", "device_id", "deviceId")
-            }
-            if identifiers & existing_ids:
-                if existing.get("source") != "onboarding":
-                    # Cloud-imported records are authoritative; never rewrite them here.
-                    return False
-                changed = False
-                if name and (not existing.get("name") or existing.get("name") in identifiers):
-                    existing["name"] = resolved_name
-                    changed = True
-                if not existing.get("product_name"):
-                    existing["product_name"] = resolved_name
-                    changed = True
-                if model and not existing.get("model"):
-                    existing["model"] = resolved_model
-                    changed = True
-                if not existing.get("schema"):
-                    existing["schema"] = resolved_schema
-                    changed = True
-                if not existing.get("category"):
-                    existing["category"] = resolved_category
-                    changed = True
-                if changed:
-                    self.paths.inventory_path.write_text(
-                        json.dumps(inventory, ensure_ascii=False, indent=2),
-                        encoding="utf-8",
-                    )
+        with inventory_transaction(self.paths.inventory_path):
+            inventory_id = (duid or did).strip()
+            if not inventory_id:
                 return False
-        # Unify the runtime-credentials record so its duid matches the inventory id while
-        # keeping the already-minted localKey. sync_inventory matches on duid only, so an
-        # unset duid would otherwise make it create a duplicate device with a fresh key.
-        self.runtime_credentials.ensure_device(
-            did=did,
-            duid=inventory_id,
-            name=resolved_name,
-            model=resolved_model,
-            product_id=resolved_product_id,
-            assign_localkey=False,
-        )
-        devices.append(
-            {
-                "duid": inventory_id,
-                "did": did,
-                "name": resolved_name,
-                "product_name": resolved_name,
-                "model": resolved_model,
-                "category": resolved_category,
-                "product_id": resolved_product_id,
-                "local_key": local_key,
-                "source": "onboarding",
-                "schema": resolved_schema,
-            }
-        )
-        inventory["devices"] = devices
-        if not isinstance(inventory.get("home"), dict):
-            inventory["home"] = {"name": "Local Home", "rooms": [{"id": 1, "name": "Living Room"}]}
-        self.paths.inventory_path.write_text(
-            json.dumps(inventory, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
-        self.root_logger.info(
-            "persisted onboarded 'new vacuum' to inventory: id=%s did=%s model=%s",
-            inventory_id,
-            did or "-",
-            model or "unknown",
-        )
-        return True
+            inventory = _load_inventory(self.paths.inventory_path)
+            devices = inventory.get("devices")
+            if not isinstance(devices, list):
+                devices = []
+            identifiers = {value for value in (inventory_id, did, duid) if value}
+            meta = resolve_product_metadata(
+                model=model,
+                custom_name=name,
+                custom_registry_path=self.paths.runtime_dir / "product_registry.custom.json",
+            )
+            resolved_name = meta["product_name"]
+            resolved_model = meta["model"]
+            resolved_category = meta["category"]
+            resolved_product_id = product_id or meta["product_id"]
+            resolved_schema = meta["schema"]
+
+            for existing in devices:
+                if not isinstance(existing, dict):
+                    continue
+                existing_ids = {
+                    str(existing.get(key) or "").strip()
+                    for key in ("duid", "did", "device_id", "deviceId")
+                }
+                if identifiers & existing_ids:
+                    if existing.get("source") != "onboarding":
+                        # Cloud-imported records are authoritative; never rewrite them here.
+                        return False
+                    changed = False
+                    if name and (not existing.get("name") or existing.get("name") in identifiers):
+                        existing["name"] = resolved_name
+                        changed = True
+                    if not existing.get("product_name"):
+                        existing["product_name"] = resolved_name
+                        changed = True
+                    if model and not existing.get("model"):
+                        existing["model"] = resolved_model
+                        changed = True
+                    if not existing.get("schema"):
+                        existing["schema"] = resolved_schema
+                        changed = True
+                    if not existing.get("category"):
+                        existing["category"] = resolved_category
+                        changed = True
+                    if changed:
+                        atomic_write_inventory(self.paths.inventory_path, inventory)
+                    return False
+            # Unify the runtime-credentials record so its duid matches the inventory id while
+            # keeping the already-minted localKey. sync_inventory matches on duid only, so an
+            # unset duid would otherwise make it create a duplicate device with a fresh key.
+            self.runtime_credentials.ensure_device(
+                did=did,
+                duid=inventory_id,
+                name=resolved_name,
+                model=resolved_model,
+                product_id=resolved_product_id,
+                assign_localkey=False,
+            )
+            devices.append(
+                {
+                    "duid": inventory_id,
+                    "did": did,
+                    "name": resolved_name,
+                    "product_name": resolved_name,
+                    "model": resolved_model,
+                    "category": resolved_category,
+                    "product_id": resolved_product_id,
+                    "local_key": local_key,
+                    "source": "onboarding",
+                    "schema": resolved_schema,
+                }
+            )
+            inventory["devices"] = devices
+            if not isinstance(inventory.get("home"), dict):
+                inventory["home"] = {"name": "Local Home", "rooms": [{"id": 1, "name": "Living Room"}]}
+            atomic_write_inventory(self.paths.inventory_path, inventory)
+            self.root_logger.info(
+                "persisted onboarded 'new vacuum' to inventory: id=%s did=%s model=%s",
+                inventory_id,
+                did or "-",
+                model or "unknown",
+            )
+            return True
 
     def clear_onboarding_session(self, *, session_id: str) -> dict[str, Any]:
         snapshot = self.runtime_state.onboarding_session_snapshot()
@@ -1870,6 +1899,7 @@ class ReleaseSupervisor:
                 "last_cloud_request": None,
                 "note": "Runtime state tracking is disabled.",
             }
+        self._refresh_turn_health()
         return runtime_state.health_snapshot()
 
     def _ui_vacuums_payload(self) -> dict[str, Any]:
@@ -2008,6 +2038,15 @@ class ReleaseSupervisor:
             self.certificate_manager.ensure_certificate()
         self.refresh_inventory_state()
 
+        if self.config.turn.mode == "provided":
+            try:
+                self._turn_relay.start()
+                self.root_logger.info("Embedded TURN relay listening on UDP %d", self.config.turn.port)
+            except Exception as exc:
+                self._turn_relay.stop()
+                self.root_logger.warning("Embedded TURN relay failed for %s:%d: %s; HTTPS and MQTT will continue", self.config.turn.host, self.config.turn.port, exc)
+        self._refresh_turn_health()
+
         if self.config.broker.mode == "embedded":
             self._broker = await start_broker(
                 self.config.broker.port,
@@ -2058,6 +2097,8 @@ class ReleaseSupervisor:
 
     async def stop(self) -> None:
         self._stop_event.set()
+        self._turn_relay.stop()
+        self._refresh_turn_health()
         if self._renew_task is not None:
             self._renew_task.cancel()
             try:
@@ -2087,8 +2128,6 @@ class ReleaseSupervisor:
             self._broker = None
 
     async def serve_forever(self) -> int:
-        await self.start()
-
         def request_shutdown() -> None:
             if not self._stop_event.is_set():
                 self._stop_event.set()
@@ -2101,6 +2140,7 @@ class ReleaseSupervisor:
                 pass
 
         try:
+            await self.start()
             await self._stop_event.wait()
         finally:
             await self.stop()

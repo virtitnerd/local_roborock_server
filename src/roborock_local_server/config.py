@@ -72,12 +72,30 @@ class AdminConfig:
 
 
 @dataclass(frozen=True)
+class TurnConfig:
+    """TURN/STUN server advertised to the robot for camera (live video) sessions.
+
+    ``provided`` starts coturn in the container; ``external`` advertises an
+    existing relay. ``disabled`` leaves the camera route on its catchall.
+    """
+
+    mode: str = "disabled"
+    host: str = ""
+    port: int = 3478
+    username: str = ""
+    password: str = ""
+    realm: str = ""
+    ttl: int = 86400
+
+
+@dataclass(frozen=True)
 class AppConfig:
     network: NetworkConfig
     broker: BrokerConfig
     storage: StorageConfig
     tls: TlsConfig
     admin: AdminConfig
+    turn: TurnConfig = TurnConfig()
 
 
 @dataclass(frozen=True)
@@ -341,6 +359,34 @@ def _load_network_broker_storage_tls(
     return network_config, broker_config, storage_config, tls_config
 
 
+def _load_turn(parsed: dict[str, object]) -> TurnConfig:
+    turn = _get_section(parsed, "turn")
+    mode = str(turn.get("mode", "external" if _as_bool(turn.get("enabled"), False) else "disabled")).strip().lower()
+    turn_config = TurnConfig(
+        mode=mode,
+        host=str(turn.get("host", "")).strip(),
+        port=_as_port(turn.get("port"), "turn.port", 3478),
+        username=str(turn.get("username", "") or ("roborock" if mode == "provided" else "")).strip(),
+        password=str(turn.get("password", "")).strip(),
+        realm=str(turn.get("realm", "") or turn.get("host", "")).strip(),
+        ttl=_as_int(turn.get("ttl"), "turn.ttl", 86400),
+    )
+    if turn_config.mode not in {"disabled", "provided", "external"}:
+        raise ValueError("turn.mode must be 'disabled', 'provided', or 'external'")
+    if turn_config.mode != "disabled":
+        _require_non_empty(turn_config.host, "turn.host")
+        _require_non_empty(turn_config.username, "turn.username")
+        _require_non_empty(turn_config.password, "turn.password")
+        _require_non_empty(turn_config.realm, "turn.realm")
+        if turn_config.ttl <= 0:
+            raise ValueError("turn.ttl must be greater than 0")
+    if turn_config.mode == "provided":
+        for name in ("username", "password", "realm"):
+            if any(character in getattr(turn_config, name) for character in "\r\n:="):
+                raise ValueError(f"turn.{name} cannot contain newlines, colons, or equals signs in provided mode")
+    return turn_config
+
+
 def _load_admin(parsed: dict[str, object]) -> AdminConfig:
     admin = _get_section(parsed, "admin")
     admin_config = AdminConfig(
@@ -366,6 +412,7 @@ def load_config(path: str | Path) -> AppConfig:
     config_path = Path(path).resolve()
     parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
     network_config, broker_config, storage_config, tls_config = _load_network_broker_storage_tls(parsed)
+    turn_config = _load_turn(parsed)
     admin_config = _load_admin(parsed)
     return AppConfig(
         network=network_config,
@@ -373,6 +420,7 @@ def load_config(path: str | Path) -> AppConfig:
         storage=storage_config,
         tls=tls_config,
         admin=admin_config,
+        turn=turn_config,
     )
 
 
@@ -390,6 +438,7 @@ def diagnose_config(path: str | Path) -> str:
         return "invalid"
     try:
         _load_network_broker_storage_tls(parsed)
+        _load_turn(parsed)
     except ValueError:
         return "invalid"
     try:
