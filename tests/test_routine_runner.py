@@ -711,3 +711,89 @@ def test_wait_for_dock_settle_timeout_raises(monkeypatch) -> None:
             await client.wait_for_dock_settle(initial_delay_seconds=0.0)
 
     asyncio.run(exercise())
+
+
+class _AnsweringWithAnError:
+    """Stands in for the MQTT client: connects, then the robot answers with an error."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        self.closed = False
+
+    async def connect(self) -> None:
+        pass
+
+    async def send_command(self, command, params=None):
+        raise RoborockException("unknown_method")
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def test_query_reports_a_robot_error_as_a_routine_error_and_closes(tmp_path: Path, monkeypatch) -> None:
+    clients: list[_AnsweringWithAnError] = []
+
+    def make_client(*args, **kwargs):
+        clients.append(_AnsweringWithAnError())
+        return clients[-1]
+
+    monkeypatch.setattr(routine_runner_module, "_RoutineMqttClient", make_client)
+    runner = RoutineRunner(_test_context(tmp_path))
+    monkeypatch.setattr(runner, "_device_record", lambda device_id: {"duid": device_id, "localkey": "k"})
+
+    with pytest.raises(routine_runner_module.RoutineExecutionError) as caught:
+        asyncio.run(runner.query("dev", RoborockCommand.GET_RECOVER_MAPS))
+
+    assert "get_recover_maps" in str(caught.value)
+    assert "unknown_method" in str(caught.value)
+    assert clients[0].closed
+
+
+class _SilentThenAnswering:
+    """Stands in for the MQTT client: the first request goes unanswered, later ones are answered."""
+
+    attempts = 0
+
+    def __init__(self, *args, **kwargs) -> None:
+        pass
+
+    async def connect(self) -> None:
+        pass
+
+    async def send_command(self, command, params=None):
+        type(self).attempts += 1
+        if type(self).attempts == 1:
+            raise routine_runner_module.RoutineTimeoutError("timed out")
+        return {"status": 1}
+
+    async def close(self) -> None:
+        pass
+
+
+def test_query_tries_once_more_when_the_first_request_is_not_answered(tmp_path: Path, monkeypatch) -> None:
+    _SilentThenAnswering.attempts = 0
+    monkeypatch.setattr(routine_runner_module, "_RoutineMqttClient", _SilentThenAnswering)
+    runner = RoutineRunner(_test_context(tmp_path))
+    monkeypatch.setattr(runner, "_device_record", lambda device_id: {"duid": device_id, "localkey": "k"})
+
+    result = asyncio.run(runner.query("dev", RoborockCommand.APP_GET_DRYER_SETTING))
+
+    assert result == {"status": 1}
+    assert _SilentThenAnswering.attempts == 2
+
+
+def test_query_gives_up_after_the_second_silence(tmp_path: Path, monkeypatch) -> None:
+    class AlwaysSilent(_SilentThenAnswering):
+        attempts = 0
+
+        async def send_command(self, command, params=None):
+            type(self).attempts += 1
+            raise routine_runner_module.RoutineTimeoutError("timed out")
+
+    monkeypatch.setattr(routine_runner_module, "_RoutineMqttClient", AlwaysSilent)
+    runner = RoutineRunner(_test_context(tmp_path))
+    monkeypatch.setattr(runner, "_device_record", lambda device_id: {"duid": device_id, "localkey": "k"})
+
+    with pytest.raises(routine_runner_module.RoutineTimeoutError):
+        asyncio.run(runner.query("dev", RoborockCommand.APP_GET_DRYER_SETTING))
+
+    assert AlwaysSilent.attempts == 2
