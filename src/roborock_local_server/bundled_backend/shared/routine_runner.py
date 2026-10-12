@@ -80,6 +80,10 @@ class RoutineExecutionError(RuntimeError):
     """Raised when a saved scene cannot be executed as a local routine."""
 
 
+class RoutineTimeoutError(RoutineExecutionError):
+    """A command was published but the vacuum did not answer in time."""
+
+
 @dataclass(frozen=True)
 class RoutineCommand:
     command: RoborockCommand
@@ -553,7 +557,7 @@ class _RoutineMqttClient:
             await self._session.publish(self._publish_topic, encoded)
             return await asyncio.wait_for(future, timeout=_COMMAND_TIMEOUT_SECONDS)
         except TimeoutError as exc:
-            raise RoutineExecutionError(
+            raise RoutineTimeoutError(
                 f"Command {command.value} timed out after {_COMMAND_TIMEOUT_SECONDS}s"
             ) from exc
         finally:
@@ -862,6 +866,47 @@ class RoutineRunner:
                 scene_id,
                 exc,
             )
+
+    async def query(
+        self,
+        device_id: str,
+        command: RoborockCommand,
+        params: dict[str, Any] | list[Any] | None = None,
+    ) -> Any:
+        """Send one command to the vacuum over the local broker and return its result.
+
+        Raises RoutineExecutionError when the vacuum is unknown, or does not answer in time. A first
+        request that goes unanswered is tried once more: an idle robot has been seen to miss the first
+        message and answer the next, and this is only used for reads, which are safe to repeat.
+        """
+        try:
+            return await self._query_once(device_id, command, params)
+        except RoutineTimeoutError:
+            return await self._query_once(device_id, command, params)
+
+    async def _query_once(
+        self,
+        device_id: str,
+        command: RoborockCommand,
+        params: dict[str, Any] | list[Any] | None,
+    ) -> Any:
+        device = self._device_record(device_id)
+        logger = logging.LoggerAdapter(
+            self._logger,
+            {"scene_id": 0, "scene_name": f"query {command.value}", "device_id": device_id},
+        )
+        client = _RoutineMqttClient(self._context, device, logger)
+        try:
+            await client.connect()
+            return await client.send_command(command, params)
+        except RoutineExecutionError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            # A robot that answers with an error (unknown_method on a model without the command) or a
+            # broker that cannot be reached is an answer to show, not a crash of the admin request.
+            raise RoutineExecutionError(f"Command {command.value} failed: {exc}") from exc
+        finally:
+            await client.close()
 
     def _device_record(self, device_id: str) -> dict[str, str]:
         creds = self._context.runtime_credentials

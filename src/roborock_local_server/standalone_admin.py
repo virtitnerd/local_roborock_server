@@ -162,6 +162,21 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
           </div>
 
           <div class="container">
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+              <h4 class="header rls-heading" style="margin:0">Map backups</h4>
+              <span class="rls-muted">Asks the robot what it has stored. Nothing is changed.</span>
+              <span style="flex:1"></span>
+              <button id="checkMaps" type="button" class="btn waves-effect waves-light">Check backups</button>
+            </div>
+            <div id="mapsError" class="alert-banner error"></div>
+            <div id="mapsResult" class="rls-muted" style="margin-top:12px">Not checked yet.</div>
+            <details class="rls-details" style="margin-top:10px">
+              <summary>Raw answer from the robot</summary>
+              <pre id="mapsRaw" class="rls-pre" style="margin-top:10px"></pre>
+            </details>
+          </div>
+
+          <div class="container">
             <h4 class="header rls-heading">Activity</h4>
             <div id="activityMeta" class="rls-muted" style="margin-bottom:10px"></div>
             <div id="activityList" class="rls-activity-list"></div>
@@ -637,6 +652,61 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
             showScheduleError(error.message);
           }}
         }});
+        // ---- Map backups (read-only probe) -------------------------------------------
+        function formatRobotTime(value) {{
+          const seconds = Number(value);
+          if (!Number.isFinite(seconds) || seconds <= 0) return "unknown time";
+          return new Date(seconds * 1000).toLocaleString();
+        }}
+        function renderMaps(payload) {{
+          const summary = payload.summary || {{}};
+          const result = field("mapsResult");
+          result.innerHTML = "";
+          const addLine = (text, strong) => {{
+            const line = document.createElement("div");
+            line.textContent = text;
+            if (strong) line.style.fontWeight = "600";
+            result.appendChild(line);
+          }};
+          const stored = summary.multi_map_count ?? (summary.maps || []).length;
+          addLine(
+            `Maps stored: ${{stored}} of ${{summary.max_multi_map ?? "?"}}. ` +
+              `Backups kept per map: up to ${{summary.max_bak_map ?? "?"}}.`,
+            true
+          );
+          for (const map of summary.maps || []) {{
+            const label = map.name ? `${{map.name}} (map ${{map.map_flag}})` : `Map ${{map.map_flag}}`;
+            const rooms = map.room_count === null || map.room_count === undefined ? "" : `, ${{map.room_count}} rooms`;
+            addLine(`${{label}}${{rooms}}, saved ${{formatRobotTime(map.add_time)}}`);
+            if (!map.backups.length) {{
+              addLine("    No backups.");
+            }}
+            for (const backup of map.backups) {{
+              addLine(`    Backup (flag ${{backup.map_flag}}) from ${{formatRobotTime(backup.add_time)}}`);
+            }}
+          }}
+          field("mapsRaw").textContent = JSON.stringify(payload.raw || {{}}, null, 2);
+        }}
+        field("checkMaps").addEventListener("click", async () => {{
+          const button = field("checkMaps");
+          const ref = schedulesDevice;
+          if (!ref) return;
+          button.disabled = true;
+          const label = button.textContent;
+          button.textContent = "Asking the robot...";
+          field("mapsError").classList.remove("shown");
+          try {{
+            renderMaps(await fetchJson(`/admin/api/vacuums/${{encodeURIComponent(ref)}}/maps`));
+          }} catch (error) {{
+            const banner = field("mapsError");
+            banner.textContent = error.message;
+            banner.classList.add("shown");
+          }} finally {{
+            button.disabled = false;
+            button.textContent = label;
+          }}
+        }});
+
         function renderAuth(auth) {{
           const enabled = Boolean(auth.new_connections_enabled);
           document.getElementById("newConnectionsEnabled").checked = enabled;
@@ -953,7 +1023,7 @@ def register_standalone_admin_routes(
             getattr(supervisor.context, "timezone", "") or supervisor.config.network.timezone or DEFAULT_TIMEZONE
         )
 
-    def _schedule_duid(ref: str) -> tuple[str, JSONResponse | None]:
+    def _vacuum_duid(ref: str) -> tuple[str, JSONResponse | None]:
         """The inventory DUID schedules are filed under for this vacuum, or an error response."""
         reference = ref.strip()
         for vacuum in supervisor._vacuums_payload()["vacuums"]:
@@ -983,7 +1053,7 @@ def register_standalone_admin_routes(
     @app.get("/admin/api/vacuums/{ref}/schedules")
     async def admin_schedules(ref: str, request: Request) -> JSONResponse:
         supervisor._require_admin(request)
-        duid, error = _schedule_duid(ref)
+        duid, error = _vacuum_duid(ref)
         if error is not None:
             return error
         zone = _schedule_zone()
@@ -1000,7 +1070,7 @@ def register_standalone_admin_routes(
     @app.post("/admin/api/vacuums/{ref}/schedules")
     async def admin_schedule_create(ref: str, request: Request) -> JSONResponse:
         supervisor._require_admin(request)
-        duid, error = _schedule_duid(ref)
+        duid, error = _vacuum_duid(ref)
         if error is not None:
             return error
         body, error = await _json_object(request)
@@ -1026,7 +1096,7 @@ def register_standalone_admin_routes(
     @app.put("/admin/api/vacuums/{ref}/schedules/{job_id}")
     async def admin_schedule_update(ref: str, job_id: str, request: Request) -> JSONResponse:
         supervisor._require_admin(request)
-        duid, error = _schedule_duid(ref)
+        duid, error = _vacuum_duid(ref)
         if error is not None:
             return error
         existing = next((job for job in list_jobs(supervisor.context, duid) if str(job.get("id")) == job_id), None)
@@ -1059,12 +1129,29 @@ def register_standalone_admin_routes(
     @app.delete("/admin/api/vacuums/{ref}/schedules/{job_id}")
     async def admin_schedule_delete(ref: str, job_id: str, request: Request) -> JSONResponse:
         supervisor._require_admin(request)
-        duid, error = _schedule_duid(ref)
+        duid, error = _vacuum_duid(ref)
         if error is not None:
             return error
         if not delete_job(supervisor.context, duid, job_id):
             return JSONResponse({"error": "Schedule not found"}, status_code=404)
         return JSONResponse({"ok": True})
+
+    @app.get("/admin/api/vacuums/{ref}/maps")
+    async def admin_map_backups(ref: str, request: Request) -> JSONResponse:
+        """What maps and map backups the robot holds. Read-only, and it asks the robot, so it is
+        only called when the page's button is pressed, never from the refresh loop."""
+        supervisor._require_admin(request)
+        from shared import map_backups
+        from shared.routine_runner import RoutineExecutionError
+
+        duid, error = _vacuum_duid(ref)
+        if error is not None:
+            return error
+        try:
+            payload = await map_backups.read_map_backups(supervisor.context, duid)
+        except RoutineExecutionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=504)
+        return JSONResponse({"duid": duid, **payload})
 
     @app.post("/admin/api/auth")
     async def admin_auth_update(request: Request) -> JSONResponse:
