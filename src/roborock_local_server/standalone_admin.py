@@ -177,6 +177,21 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
           </div>
 
           <div class="container">
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+              <h4 class="header rls-heading" style="margin:0">Dock and robot capabilities</h4>
+              <span class="rls-muted">Asks the robot which options it supports and their values. Nothing is changed.</span>
+              <span style="flex:1"></span>
+              <button id="checkCaps" type="button" class="btn waves-effect waves-light">Read capabilities</button>
+            </div>
+            <div id="capsError" class="alert-banner error"></div>
+            <div id="capsResult" class="rls-muted" style="margin-top:12px">Not read yet.</div>
+            <details class="rls-details" style="margin-top:10px">
+              <summary>Raw answers from the robot</summary>
+              <pre id="capsRaw" class="rls-pre" style="margin-top:10px"></pre>
+            </details>
+          </div>
+
+          <div class="container">
             <h4 class="header rls-heading">Activity</h4>
             <div id="activityMeta" class="rls-muted" style="margin-bottom:10px"></div>
             <div id="activityList" class="rls-activity-list"></div>
@@ -707,6 +722,48 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
           }}
         }});
 
+        // ---- Dock and robot capabilities (read-only probe) ---------------------------
+        function renderCapabilities(payload) {{
+          const result = field("capsResult");
+          result.innerHTML = "";
+          const addLine = (text, strong) => {{
+            const line = document.createElement("div");
+            line.textContent = text;
+            if (strong) line.style.fontWeight = "600";
+            result.appendChild(line);
+          }};
+          const dock = payload.dock || {{}};
+          const dockName = dock.name ? `${{dock.name}} (type ${{dock.dock_type}})` : String(dock.dock_type ?? "not reported");
+          addLine(`Dock: ${{dockName}}`, true);
+          if ((dock.capabilities || []).length) addLine(`Dock can: ${{dock.capabilities.join(", ")}}`);
+          const features = payload.features || {{}};
+          addLine(`Robot features reported: ${{(features.supported || []).length}}`, true);
+          if ((features.supported || []).length) addLine((features.supported || []).join(", "));
+          for (const [name, message] of Object.entries(payload.errors || {{}})) {{
+            addLine(`${{name}}: ${{message}}`);
+          }}
+          field("capsRaw").textContent = JSON.stringify(payload.raw || {{}}, null, 2);
+        }}
+        field("checkCaps").addEventListener("click", async () => {{
+          const button = field("checkCaps");
+          const ref = schedulesDevice;
+          if (!ref) return;
+          button.disabled = true;
+          const label = button.textContent;
+          button.textContent = "Asking the robot...";
+          field("capsError").classList.remove("shown");
+          try {{
+            renderCapabilities(await fetchJson(`/admin/api/vacuums/${{encodeURIComponent(ref)}}/capabilities`));
+          }} catch (error) {{
+            const banner = field("capsError");
+            banner.textContent = error.message;
+            banner.classList.add("shown");
+          }} finally {{
+            button.disabled = false;
+            button.textContent = label;
+          }}
+        }});
+
         function renderAuth(auth) {{
           const enabled = Boolean(auth.new_connections_enabled);
           document.getElementById("newConnectionsEnabled").checked = enabled;
@@ -1149,6 +1206,23 @@ def register_standalone_admin_routes(
             return error
         try:
             payload = await map_backups.read_map_backups(supervisor.context, duid)
+        except RoutineExecutionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=504)
+        return JSONResponse({"duid": duid, **payload})
+
+    @app.get("/admin/api/vacuums/{ref}/capabilities")
+    async def admin_capabilities(ref: str, request: Request) -> JSONResponse:
+        """The robot's feature flags, dock type and the values behind its dock and robot settings.
+        Read-only; it asks the robot, so like the map probe it only runs when the button is pressed."""
+        supervisor._require_admin(request)
+        from shared import capabilities
+        from shared.routine_runner import RoutineExecutionError
+
+        duid, error = _vacuum_duid(ref)
+        if error is not None:
+            return error
+        try:
+            payload = await capabilities.read_capabilities(supervisor.context, duid)
         except RoutineExecutionError as exc:
             return JSONResponse({"error": str(exc)}, status_code=504)
         return JSONResponse({"duid": duid, **payload})
