@@ -298,6 +298,23 @@ STYLE_CSS = dedent(
     }
 
     .hidden { display: none !important; }
+    /* Pushes a heading row's button to the far end while the row has room. */
+    .rls-spacer { flex: 1; }
+
+    @media (max-width: 600px) {
+        /* Materialize gives the nav's links and icons a fixed 56px line height, so on a phone the title
+           and "Sign Out" each wrap onto several tall lines. Let them size to their text instead. */
+        nav .brand-logo { font-size: 1rem; line-height: 1.25; flex-wrap: nowrap; }
+        nav .brand-logo .material-icons { height: auto; line-height: 1; }
+        .nav-wrapper { padding: 0 .75em; gap: .25em; }
+        nav .btn-flat { white-space: nowrap; height: auto; line-height: 1.2; padding: 0 .5em; }
+        nav .btn-flat .material-icons { height: auto; line-height: 1; }
+        /* Two facts across instead of one long column; the 14rem minimum only fits one on a phone. */
+        .rls-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .rls-fact-value { overflow-wrap: anywhere; }
+        /* With no room to push right, a heading row's button follows its text instead of floating. */
+        .rls-spacer { display: none; }
+    }
 
     @media (max-width: 480px) {
         .container:not(.nav-wrapper) { padding: 1em; margin-top: .75em; margin-bottom: .75em; }
