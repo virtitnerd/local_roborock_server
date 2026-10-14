@@ -190,7 +190,7 @@ def _status_html() -> str:
     return (
         dedent(
             """\
-            <!doctype html><html><head><meta charset="utf-8">
+            <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
             <title>Roborock Local Server</title>
             """
         )
@@ -330,7 +330,7 @@ def _setup_wizard_html(prefill: Mapping[str, str] | None = None) -> str:
     return (
         dedent(
             """\
-            <!doctype html><html><head><meta charset="utf-8">
+            <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
             <title>Roborock Local Server Setup</title>
             """
         )
@@ -516,7 +516,7 @@ def _admin_only_wizard_html() -> str:
     return (
         dedent(
             """\
-            <!doctype html><html><head><meta charset="utf-8">
+            <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
             <title>Roborock Local Server Setup</title>
             """
         )
