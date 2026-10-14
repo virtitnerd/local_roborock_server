@@ -17,7 +17,7 @@ def _admin_login_html() -> str:
     return (
         dedent(
             """\
-            <!doctype html><html><head><meta charset="utf-8">
+            <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
             <title>Roborock Local Server</title>
             """
         )
@@ -74,7 +74,7 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
     support_payload = json.dumps(project_support)
     return dedent(
         f"""\
-        <!doctype html><html><head><meta charset="utf-8">
+        <!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
         <title>Roborock Local Server</title>
         {HEAD_ASSETS}
         </head><body>
@@ -105,7 +105,7 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
             <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
               <h4 class="header rls-heading" style="margin:0">Map backups</h4>
               <span class="rls-muted">Asks the robot what it has stored. Nothing is changed.</span>
-              <span style="flex:1"></span>
+              <span class="rls-spacer"></span>
               <button id="checkMaps" type="button" class="btn waves-effect waves-light">Check backups</button>
             </div>
             <div id="mapsError" class="alert-banner error"></div>
@@ -120,7 +120,7 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
             <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
               <h4 class="header rls-heading" style="margin:0">Dock and robot capabilities</h4>
               <span class="rls-muted">Asks the robot which options it supports and their values. Nothing is changed.</span>
-              <span style="flex:1"></span>
+              <span class="rls-spacer"></span>
               <button id="checkCaps" type="button" class="btn waves-effect waves-light">Read capabilities</button>
             </div>
             <div id="capsError" class="alert-banner error"></div>
