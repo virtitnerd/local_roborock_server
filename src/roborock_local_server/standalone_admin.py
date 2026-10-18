@@ -235,6 +235,7 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
         function yesNo(value) {{
           return value ? "Yes" : "No";
         }}
+        const field = (id) => document.getElementById(id);
         let vacuumList = [];
         let currentDevice = "";
         const deviceKey = (vac) => vac.duid || vac.did || "";
