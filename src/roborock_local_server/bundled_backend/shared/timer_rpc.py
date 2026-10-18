@@ -1,9 +1,19 @@
-"""Answer the vacuum's legacy timer RPCs (get/set/upd/del_timer) from the schedule store.
+"""Answer the vacuum's timer RPCs from the schedule store.
 
 On cloud-managed robots the schedules live server-side, not on the robot, so
 clients such as LocalRock that ask the robot for its timers would otherwise see
 nothing and could never change the schedules the cloud imported. The topic
 bridge hands matching requests here instead of forwarding them to the robot.
+
+Two separate families exist on the wire, both answered here against the same
+store. Legacy ``get/set/upd/del_timer`` is a bare-array format some older or
+simpler firmware still speaks. Newer firmware instead speaks
+``get/set/upd/del_server_timer``, confirmed live against a Roborock Qrevo:
+``set_server_timer``'s ``params`` is an object, ``{"data": [[id, [cron,
+action]]], "need_retry": 1}``, not a bare array, and its entries carry no
+on/off status of their own (that's ``upd_server_timer``'s job). Firmware that
+only understands this newer shape rejects legacy ``set_timer`` outright with
+``-10005 "timer type error"``.
 """
 
 from __future__ import annotations
@@ -35,6 +45,10 @@ if TYPE_CHECKING:
 _LOGGER = logging.getLogger(__name__)
 
 TIMER_METHODS = frozenset({"get_timer", "set_timer", "upd_timer", "del_timer"})
+SERVER_TIMER_METHODS = frozenset(
+    {"get_server_timer", "set_server_timer", "upd_server_timer", "del_server_timer"}
+)
+_ALL_TIMER_METHODS = TIMER_METHODS | SERVER_TIMER_METHODS
 _OK = ["ok"]
 
 
@@ -64,6 +78,39 @@ def _timer_entry(job: dict[str, Any]) -> list[Any] | None:
     enabled = job.get("enabled", True)
     on = enabled not in (False, 0, "0", "false", "False")
     return [str(job.get("id")), "on" if on else "off", [cron, ["start_clean", job_settings(job)]]]
+
+
+def _server_timer_entry(job: dict[str, Any]) -> list[Any]:
+    enabled = job.get("enabled", True)
+    on = enabled not in (False, 0, "0", "false", "False")
+    settings = job_settings(job)
+    map_index = settings.get("map_index", -1)
+    return [str(job.get("id")), "on" if on else "off", map_index]
+
+
+def _parse_set_server_timer(params: Any) -> list[tuple[str, str, dict[str, Any]]]:
+    """Each ``[id, [cron, [method, settings]]]`` entry in a set_server_timer request.
+
+    Unlike set_timer's ``[id, [status, [cron, action]]]``, an entry here carries no
+    status of its own; a newly saved schedule is implicitly on, and turning one off
+    is a separate upd_server_timer call.
+    """
+    data = params.get("data") if isinstance(params, dict) else None
+    if not isinstance(data, list) or not data:
+        raise TimerRequestError("set_server_timer needs params.data")
+    parsed: list[tuple[str, str, dict[str, Any]]] = []
+    for entry in data:
+        if not isinstance(entry, list) or len(entry) < 2:
+            raise TimerRequestError("set_server_timer entry must be [id, [cron, action]]")
+        job_id = str(entry[0])
+        detail = entry[1]
+        if not isinstance(detail, list) or not detail:
+            raise TimerRequestError("set_server_timer entry is missing its cron")
+        cron = str(detail[0])
+        action = detail[1] if len(detail) > 1 else None
+        settings = action[1] if isinstance(action, list) and len(action) > 1 and isinstance(action[1], dict) else {}
+        parsed.append((job_id, cron, settings))
+    return parsed
 
 
 def _parse_set_timer(params: Any) -> tuple[str, bool, str, dict[str, Any]]:
@@ -145,6 +192,44 @@ def handle_timer_request(
         delete_job(ctx, duid, _single_id(params))
         return list(_OK)
 
+    if method == "get_server_timer":
+        return [_server_timer_entry(job) for job in list_jobs(ctx, duid)]
+
+    if method == "set_server_timer":
+        jobs = list_jobs(ctx, duid)
+        zone = str(getattr(ctx, "timezone", "") or default_timezone or DEFAULT_TIMEZONE)
+        for job_id, cron, action_settings in _parse_set_server_timer(params):
+            try:
+                parse_cron(cron)
+            except CronError as exc:
+                raise TimerRequestError(str(exc)) from exc
+            settings = {key: value for key, value in action_settings.items() if key in JOB_SETTING_KEYS}
+            existing = next((job for job in jobs if str(job.get("id")) == job_id), None)
+            param = None
+            if settings:
+                try:
+                    param = merge_job_settings(existing.get("param") if existing else None, settings)
+                except SettingsError as exc:
+                    raise TimerRequestError(str(exc)) from exc
+            # An entry here carries no status of its own: a new one starts on, and
+            # editing one leaves whatever upd_server_timer last set it to alone.
+            enabled = existing.get("enabled", True) if existing else True
+            upsert_job(ctx, duid, job_id=job_id, cron=cron, enabled=enabled, time_zone=zone, param=param)
+        return list(_OK)
+
+    if method == "upd_server_timer":
+        # Params shape assumed to mirror upd_timer's [id, status]; not yet captured
+        # live, since nothing in this session's traffic toggled a server timer off.
+        job_id, status = _id_and_status(params)
+        if status not in ("on", "off"):
+            raise TimerRequestError(f"unknown timer status {status!r}")
+        set_enabled(ctx, duid, job_id, status == "on")
+        return list(_OK)
+
+    if method == "del_server_timer":
+        delete_job(ctx, duid, _single_id(params))
+        return list(_OK)
+
     raise TimerRequestError(f"not a timer method: {method!r}")
 
 
@@ -176,7 +261,7 @@ class TimerRpcInterceptor:
         if protocol != RoborockMessageProtocol.RPC_REQUEST.value or not message.payload:
             return None
         request = _request_body(message)
-        if request is None or request.get("method") not in TIMER_METHODS:
+        if request is None or request.get("method") not in _ALL_TIMER_METHODS:
             return None
 
         request_id = request.get("id")

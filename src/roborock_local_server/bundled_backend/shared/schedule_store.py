@@ -25,6 +25,9 @@ JOB_SETTING_KEYS = (
     "mop_template_id",
     "segments",
     "clean_mop",
+    # Which saved map a server_timer schedule runs against; -1 means no specific map.
+    # Legacy set_timer schedules never carry this.
+    "map_index",
 )
 _INT_SETTING_KEYS = frozenset(JOB_SETTING_KEYS) - {"segments"}
 
