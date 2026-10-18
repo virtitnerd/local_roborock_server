@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, replace
+from enum import StrEnum
 import json
 import logging
 from pathlib import Path
@@ -58,8 +59,21 @@ _POST_STEP_SETTLE_TIMEOUT_SECONDS = 10 * 60
 _ACTION_LOCK_RETRY_DELAY_SECONDS = 5.0
 _ACTION_LOCK_RETRY_ATTEMPTS = 6
 from .inventory_io import WEB_API_INVENTORY_FILE
+class SchedulerCommand(StrEnum):
+    """A robot command python-roborock's RoborockCommand does not list."""
+
+    # The cloud's own way to run a schedule: the robot answers it with the schedule's settings entry
+    # (the same one the cloud job carries, including "name", the robot-side timer id) and records the
+    # clean as "Schedules" in its history, for whole-home and room schedules alike. Confirmed live;
+    # without the entry it answers -10005 "Invalid timer", and with a bare id "Param should be
+    # name + fan + segment".
+    SERVER_SCHEDULED_START = "server_scheduled_start"
+
+
 # A whole-home clean started by a schedule rather than a scene; see commands_for_step.
 SCHEDULE_APP_START = "schedule_app_start"
+# Any schedule that knows its robot-side timer id; the robot runs it itself when asked this way.
+SCHEDULE_SERVER_START = "schedule_server_start"
 _SUPPORTED_METHODS = {
     "do_scenes_app_start",
     "do_scenes_segments",
@@ -69,6 +83,7 @@ _STEP_START_COMMANDS = {
     RoborockCommand.APP_START,
     RoborockCommand.APP_SEGMENT_CLEAN,
     RoborockCommand.APP_ZONED_CLEAN,
+    SchedulerCommand.SERVER_SCHEDULED_START,
 }
 _ACTION_LOCK_ERROR_CODES = {-10003, -10007}
 _PARAM_ERROR_CODE = -10005
@@ -77,6 +92,7 @@ _PARAM_ERROR_CODE = -10005
 # -10005 "Param error" to a value it does not support, such as a route its model lacks.
 _APP_START_KEYS = ("repeat", "water_box_mode", "segments", "fan_power", "mop_mode", "clean_mop", "map_index")
 _APP_START_DEFAULTS = {"repeat": 1, "segments": "0", "clean_mop": 1, "map_index": -1}
+_SETTING_ENTRY_KEYS = ("repeat", "fan_power", "water_box_mode", "mop_mode", "mop_template_id")
 # app_start's "source" field is how the robot learns who started a clean, for its history. 3 is
 # python-roborock's RoborockStartType.schedule, and a robot recorded the clean as "Schedule" in the
 # official app's history; an app start is 2. "start_type", "startType", "start_from", "from" and
@@ -99,7 +115,7 @@ class RoutineTimeoutError(RoutineExecutionError):
 
 @dataclass(frozen=True)
 class RoutineCommand:
-    command: RoborockCommand
+    command: RoborockCommand | SchedulerCommand
     params: dict[str, Any] | list[Any] | None = None
 
 
@@ -393,6 +409,10 @@ def commands_for_step(step: RoutineStep) -> list[RoutineCommand]:
             ),
             RoutineCommand(RoborockCommand.APP_START, None),
         ]
+    if step.method == SCHEDULE_SERVER_START:
+        entry = _single_start_entry(step)
+        body = {key: entry[key] for key in (*_APP_START_KEYS, "name") if key in entry}
+        return [RoutineCommand(SchedulerCommand.SERVER_SCHEDULED_START, [body])]
     if step.method == SCHEDULE_APP_START:
         entry = _single_start_entry(step)
         body = {**_APP_START_DEFAULTS, **{key: entry[key] for key in _APP_START_KEYS if key in entry}}
@@ -404,10 +424,24 @@ def commands_for_step(step: RoutineStep) -> list[RoutineCommand]:
 def fallback_commands_for_step(step: RoutineStep) -> list[RoutineCommand] | None:
     """The longer way to run [step], for when the robot refuses the short one; None if there is none.
 
-    A schedule starts with one app_start carrying its settings. A refused command changes nothing,
-    so on "Param error" the same settings are sent as separate commands, which is how a routine
-    always starts a whole-home clean.
+    A schedule is started by asking the robot to run it (server_scheduled_start), and failing that
+    by one app_start carrying its settings. A refused command changes nothing, so on "Param error"
+    or "Invalid timer" the next, plainer way is tried: a room schedule as a segment clean, a
+    whole-home one as separate setting commands, which is how a routine starts a whole-home clean.
     """
+    if step.method == SCHEDULE_SERVER_START:
+        entry = _single_start_entry(step)
+        rooms = [
+            int(part)
+            for part in str(entry.get("segments") or "").replace(";", ",").split(",")
+            if part.strip().isdigit() and int(part) > 0
+        ]
+        if rooms:
+            settings = {key: entry[key] for key in _SETTING_ENTRY_KEYS if key in entry}
+            return commands_for_step(
+                replace(step, method="do_scenes_segments", params={"data": [{**settings, "segs": rooms}]})
+            )
+        return commands_for_step(replace(step, method=SCHEDULE_APP_START))
     if step.method != SCHEDULE_APP_START:
         return None
     return commands_for_step(replace(step, method="do_scenes_app_start"))
@@ -568,7 +602,7 @@ class _RoutineMqttClient:
 
     async def send_command(
         self,
-        command: RoborockCommand,
+        command: RoborockCommand | SchedulerCommand,
         params: dict[str, Any] | list[Any] | None = None,
     ) -> Any:
         if self._session is None:

@@ -11,6 +11,7 @@ from roborock_local_server.bundled_backend.shared.context import ServerContext
 import roborock_local_server.bundled_backend.shared.routine_runner as routine_runner_module
 from roborock_local_server.bundled_backend.shared.routine_runner import (
     SCHEDULE_APP_START,
+    SCHEDULE_SERVER_START,
     RoutineRunner,
     RoutineStep,
     parse_scene_steps,
@@ -881,3 +882,78 @@ def test_a_schedule_start_does_not_fall_back_on_any_other_refusal(tmp_path: Path
         _run_schedule_step(
             tmp_path, monkeypatch, step, refuse_single_start_with={"code": -10001, "message": "Busy"}
         )
+
+
+def _run_schedule_step_refusing(tmp_path: Path, monkeypatch, step: RoutineStep, error: dict):
+    """Like _run_schedule_step, but the robot refuses server_scheduled_start and accepts the rest."""
+    sent_commands: list[tuple[object, object]] = []
+
+    class FakeRoutineClient:
+        def __init__(self, context, device, logger) -> None:
+            _ = context, device, logger
+
+        async def connect(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def send_command(self, command, params=None):
+            sent_commands.append((command, params))
+            if command == routine_runner_module.SchedulerCommand.SERVER_SCHEDULED_START:
+                raise RoborockException(error)
+            return ["ok"]
+
+        async def wait_for_step_complete(self) -> None:
+            return None
+
+    monkeypatch.setattr(routine_runner_module, "_RoutineMqttClient", FakeRoutineClient)
+    scene = _scene(scene_id=1, device_id="6HL2zfniaoYYV01CkVuhkO", name="Schedule 1")
+    runner = RoutineRunner(_test_context(tmp_path))
+    return sent_commands, asyncio.run(runner._run_steps(scene=scene, steps=[step], sync_scene_tids=False))
+
+
+def _server_start_step(**entry) -> RoutineStep:
+    return RoutineStep(step_id=1, name="Schedule 1", method=SCHEDULE_SERVER_START, params=[entry], finish_dp_ids=())
+
+
+def test_a_server_start_asks_the_robot_to_run_the_schedule_with_its_whole_entry(tmp_path: Path, monkeypatch) -> None:
+    # Sent exactly as the cloud job's settings entry, "name" (the robot-side timer id) included;
+    # confirmed live to start a clean the robot records as "Schedules | Rooms".
+    step = _server_start_step(
+        repeat=1, water_box_mode=202, segments="16,17", fan_power=102, mop_mode=300,
+        clean_mop=1, map_index=0, name="1792336598179",
+    )
+
+    sent, _ = _run_schedule_step(tmp_path, monkeypatch, step, refuse_single_start_with=None)
+
+    assert [command for command, _ in sent] == [routine_runner_module.SchedulerCommand.SERVER_SCHEDULED_START]
+    assert sent[0][1] == [
+        {"repeat": 1, "water_box_mode": 202, "segments": "16,17", "fan_power": 102, "mop_mode": 300,
+         "clean_mop": 1, "map_index": 0, "name": "1792336598179"}
+    ]
+
+
+def test_a_refused_server_start_falls_back_to_a_segment_clean_for_a_room_schedule(tmp_path: Path, monkeypatch) -> None:
+    # "Invalid timer" (the robot no longer holds that timer) is a -10005 like any bad parameter.
+    step = _server_start_step(fan_power=102, water_box_mode=202, segments="16,17", name="gone")
+    sent, _ = _run_schedule_step_refusing(tmp_path, monkeypatch, step, {"code": -10005, "message": "Invalid timer"})
+
+    commands = [command for command, _ in sent]
+    assert commands[0] == routine_runner_module.SchedulerCommand.SERVER_SCHEDULED_START
+    assert commands[-1] == RoborockCommand.APP_SEGMENT_CLEAN
+    assert sent[-1][1] == [{"segments": [16, 17], "repeat": 1}]
+
+
+def test_a_refused_server_start_falls_back_to_the_single_app_start_for_a_whole_home_schedule(
+    tmp_path: Path, monkeypatch
+) -> None:
+    step = _server_start_step(fan_power=102, water_box_mode=202, segments="0", name="gone")
+    sent, _ = _run_schedule_step_refusing(tmp_path, monkeypatch, step, {"code": -10005, "message": "Invalid timer"})
+
+    assert sent[0][0] == routine_runner_module.SchedulerCommand.SERVER_SCHEDULED_START
+    assert sent[1] == (
+        RoborockCommand.APP_START,
+        [{"repeat": 1, "segments": "0", "clean_mop": 1, "map_index": -1, "fan_power": 102,
+          "water_box_mode": 202, "source": 3}],
+    )

@@ -18,7 +18,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from .constants import DEFAULT_TIMEZONE
 from .data_helpers import as_bool
 from .inventory_io import load_inventory
-from .routine_runner import SCHEDULE_APP_START, RoutineExecutionError, RoutineStep, get_routine_runner
+from .routine_runner import (
+    SCHEDULE_APP_START,
+    SCHEDULE_SERVER_START,
+    RoutineExecutionError,
+    RoutineStep,
+    get_routine_runner,
+)
 from .schedule_store import set_enabled
 
 if TYPE_CHECKING:
@@ -194,9 +200,22 @@ def steps_for_job(job: dict[str, Any]) -> list[RoutineStep]:
     settings = {key: entry[key] for key in _CARRIED_ENTRY_KEYS if key in entry}
     # A whole-home start also carries the rest of the entry, so one app_start can take it all.
     start_settings = {key: entry[key] for key in _START_ENTRY_KEYS if key in entry}
+    # The robot-side timer id the official app (or LocalRock) saved this schedule under. A schedule
+    # that has one is run the way the cloud runs it: the robot is asked to start that timer.
+    timer_id = entry.get("name")
     name = str(entry.get("name") or job.get("name") or "").strip()
     if not name or name.isdigit():
         name = f"Schedule {job.get('id', '')}".strip()
+    if isinstance(timer_id, str) and timer_id.strip():
+        return [
+            RoutineStep(
+                step_id=1,
+                name=name,
+                method=SCHEDULE_SERVER_START,
+                params=[{**start_settings, "name": timer_id.strip()}],
+                finish_dp_ids=(),
+            )
+        ]
     segments = _segment_ids(entry.get("segments"))
     if segments:
         return [
