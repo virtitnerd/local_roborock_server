@@ -4,6 +4,17 @@ On cloud-managed robots the schedules live server-side, not on the robot, so
 clients such as LocalRock that ask the robot for its timers would otherwise see
 nothing and could never change the schedules the cloud imported. The topic
 bridge hands matching requests here instead of forwarding them to the robot.
+
+Deliberately not handled here: get/set/upd/del_server_timer, the newer sibling
+protocol some firmware speaks instead of (or alongside) this one. A robot that
+uses server_timer stores the schedule itself and fires it autonomously from its
+own onboard clock, confirmed live: a server_timer schedule fired at its exact
+scheduled second with no preceding request from any client, server, or cloud.
+Intercepting it here, tried once, answers it from this store instead of the
+robot, which hides the robot's real native schedules from every client and
+caused real data loss (the official app auto-deletes server_timer entries it
+doesn't recognize when its schedule screen opens). server_timer must always be
+left to forward to the robot untouched; it needs no help from this server.
 """
 
 from __future__ import annotations
