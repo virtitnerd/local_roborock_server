@@ -102,6 +102,36 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
           </div>
 
           <div class="container">
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+              <h4 class="header rls-heading" style="margin:0">Map backups</h4>
+              <span class="rls-muted">Asks the robot what it has stored. Nothing is changed.</span>
+              <span style="flex:1"></span>
+              <button id="checkMaps" type="button" class="btn waves-effect waves-light">Check backups</button>
+            </div>
+            <div id="mapsError" class="alert-banner error"></div>
+            <div id="mapsResult" class="rls-muted" style="margin-top:12px">Not checked yet.</div>
+            <details class="rls-details" style="margin-top:10px">
+              <summary>Raw answer from the robot</summary>
+              <pre id="mapsRaw" class="rls-pre" style="margin-top:10px"></pre>
+            </details>
+          </div>
+
+          <div class="container">
+            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
+              <h4 class="header rls-heading" style="margin:0">Dock and robot capabilities</h4>
+              <span class="rls-muted">Asks the robot which options it supports and their values. Nothing is changed.</span>
+              <span style="flex:1"></span>
+              <button id="checkCaps" type="button" class="btn waves-effect waves-light">Read capabilities</button>
+            </div>
+            <div id="capsError" class="alert-banner error"></div>
+            <div id="capsResult" class="rls-muted" style="margin-top:12px">Not read yet.</div>
+            <details class="rls-details" style="margin-top:10px">
+              <summary>Raw answers from the robot</summary>
+              <pre id="capsRaw" class="rls-pre" style="margin-top:10px"></pre>
+            </details>
+          </div>
+
+          <div class="container">
             <h4 class="header rls-heading">Activity</h4>
             <div id="activityMeta" class="rls-muted" style="margin-bottom:10px"></div>
             <div id="activityList" class="rls-activity-list"></div>
@@ -205,7 +235,9 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
         function yesNo(value) {{
           return value ? "Yes" : "No";
         }}
+        const field = (id) => document.getElementById(id);
         let vacuumList = [];
+        let currentDevice = "";
         const deviceKey = (vac) => vac.duid || vac.did || "";
         const vacuumLabel = (vac) => vac.name || vac.did || vac.duid || "Unknown vacuum";
         function currentSelection() {{
@@ -292,6 +324,104 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
           const redacted = Object.assign({{}}, vac, {{local_key: vac.local_key ? "<redacted>" : ""}});
           document.getElementById("deviceRaw").textContent = JSON.stringify(redacted, null, 2);
         }}
+
+        // ---- Map backups (read-only probe) -------------------------------------------
+        function formatRobotTime(value) {{
+          const seconds = Number(value);
+          if (!Number.isFinite(seconds) || seconds <= 0) return "unknown time";
+          return new Date(seconds * 1000).toLocaleString();
+        }}
+        function renderMaps(payload) {{
+          const summary = payload.summary || {{}};
+          const result = field("mapsResult");
+          result.innerHTML = "";
+          const addLine = (text, strong) => {{
+            const line = document.createElement("div");
+            line.textContent = text;
+            if (strong) line.style.fontWeight = "600";
+            result.appendChild(line);
+          }};
+          const stored = summary.multi_map_count ?? (summary.maps || []).length;
+          addLine(
+            `Maps stored: ${{stored}} of ${{summary.max_multi_map ?? "?"}}. ` +
+              `Backups kept per map: up to ${{summary.max_bak_map ?? "?"}}.`,
+            true
+          );
+          for (const map of summary.maps || []) {{
+            const label = map.name ? `${{map.name}} (map ${{map.map_flag}})` : `Map ${{map.map_flag}}`;
+            const rooms = map.room_count === null || map.room_count === undefined ? "" : `, ${{map.room_count}} rooms`;
+            addLine(`${{label}}${{rooms}}, saved ${{formatRobotTime(map.add_time)}}`);
+            if (!map.backups.length) {{
+              addLine("    No backups.");
+            }}
+            for (const backup of map.backups) {{
+              addLine(`    Backup (flag ${{backup.map_flag}}) from ${{formatRobotTime(backup.add_time)}}`);
+            }}
+          }}
+          field("mapsRaw").textContent = JSON.stringify(payload.raw || {{}}, null, 2);
+        }}
+        field("checkMaps").addEventListener("click", async () => {{
+          const button = field("checkMaps");
+          const ref = currentDevice;
+          if (!ref) return;
+          button.disabled = true;
+          const label = button.textContent;
+          button.textContent = "Asking the robot...";
+          field("mapsError").classList.remove("shown");
+          try {{
+            renderMaps(await fetchJson(`/admin/api/vacuums/${{encodeURIComponent(ref)}}/maps`));
+          }} catch (error) {{
+            const banner = field("mapsError");
+            banner.textContent = error.message;
+            banner.classList.add("shown");
+          }} finally {{
+            button.disabled = false;
+            button.textContent = label;
+          }}
+        }});
+
+        // ---- Dock and robot capabilities (read-only probe) ---------------------------
+        function renderCapabilities(payload) {{
+          const result = field("capsResult");
+          result.innerHTML = "";
+          const addLine = (text, strong) => {{
+            const line = document.createElement("div");
+            line.textContent = text;
+            if (strong) line.style.fontWeight = "600";
+            result.appendChild(line);
+          }};
+          const dock = payload.dock || {{}};
+          const dockName = dock.name ? `${{dock.name}} (type ${{dock.dock_type}})` : String(dock.dock_type ?? "not reported");
+          addLine(`Dock: ${{dockName}}`, true);
+          if ((dock.capabilities || []).length) addLine(`Dock can: ${{dock.capabilities.join(", ")}}`);
+          const features = payload.features || {{}};
+          addLine(`Robot features reported: ${{(features.supported || []).length}}`, true);
+          if ((features.supported || []).length) addLine((features.supported || []).join(", "));
+          for (const [name, message] of Object.entries(payload.errors || {{}})) {{
+            addLine(`${{name}}: ${{message}}`);
+          }}
+          field("capsRaw").textContent = JSON.stringify(payload.raw || {{}}, null, 2);
+        }}
+        field("checkCaps").addEventListener("click", async () => {{
+          const button = field("checkCaps");
+          const ref = currentDevice;
+          if (!ref) return;
+          button.disabled = true;
+          const label = button.textContent;
+          button.textContent = "Asking the robot...";
+          field("capsError").classList.remove("shown");
+          try {{
+            renderCapabilities(await fetchJson(`/admin/api/vacuums/${{encodeURIComponent(ref)}}/capabilities`));
+          }} catch (error) {{
+            const banner = field("capsError");
+            banner.textContent = error.message;
+            banner.classList.add("shown");
+          }} finally {{
+            button.disabled = false;
+            button.textContent = label;
+          }}
+        }});
+
         function renderAuth(auth) {{
           const enabled = Boolean(auth.new_connections_enabled);
           document.getElementById("newConnectionsEnabled").checked = enabled;
@@ -440,7 +570,9 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
           const vac = vacuumList.find((item) => deviceKey(item) === selected || item.did === selected);
           if (!vac) return;
           renderDevice(vac);
-          renderActivity(await fetchJson(`/admin/api/activity?device=${{encodeURIComponent(deviceKey(vac))}}`));
+          const ref = deviceKey(vac);
+          currentDevice = ref;
+          renderActivity(await fetchJson(`/admin/api/activity?device=${{encodeURIComponent(ref)}}`));
         }}
         window.addEventListener("hashchange", () => refresh().catch(() => {{}}));
         document.getElementById("sendCode").addEventListener("click", async () => {{
@@ -586,6 +718,58 @@ def register_standalone_admin_routes(
         if device and not payload["device_known"]:
             return JSONResponse({"error": f"Unknown vacuum {device!r}"}, status_code=404)
         return JSONResponse(payload)
+
+    def _vacuum_duid(ref: str) -> tuple[str, JSONResponse | None]:
+        """The inventory DUID schedules are filed under for this vacuum, or an error response."""
+        reference = ref.strip()
+        for vacuum in supervisor._vacuums_payload()["vacuums"]:
+            keys = {
+                str(vacuum.get(key) or "").strip()
+                for key in ("duid", "did", "runtime_did", "linked_inventory_duid")
+            }
+            if reference not in keys:
+                continue
+            duid = str(vacuum.get("duid") or "").strip() if vacuum.get("id_kind", "duid") == "duid" else ""
+            if not duid:
+                return "", JSONResponse(
+                    {"error": "This vacuum has no DUID yet; finish the cloud import first."}, status_code=409
+                )
+            return duid, None
+        return "", JSONResponse({"error": f"Unknown vacuum {reference!r}"}, status_code=404)
+
+    @app.get("/admin/api/vacuums/{ref}/maps")
+    async def admin_map_backups(ref: str, request: Request) -> JSONResponse:
+        """What maps and map backups the robot holds. Read-only, and it asks the robot, so it is
+        only called when the page's button is pressed, never from the refresh loop."""
+        supervisor._require_admin(request)
+        from shared import map_backups
+        from shared.routine_runner import RoutineExecutionError
+
+        duid, error = _vacuum_duid(ref)
+        if error is not None:
+            return error
+        try:
+            payload = await map_backups.read_map_backups(supervisor.context, duid)
+        except RoutineExecutionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=504)
+        return JSONResponse({"duid": duid, **payload})
+
+    @app.get("/admin/api/vacuums/{ref}/capabilities")
+    async def admin_capabilities(ref: str, request: Request) -> JSONResponse:
+        """The robot's feature flags, dock type and the values behind its dock and robot settings.
+        Read-only; it asks the robot, so like the map probe it only runs when the button is pressed."""
+        supervisor._require_admin(request)
+        from shared import capabilities
+        from shared.routine_runner import RoutineExecutionError
+
+        duid, error = _vacuum_duid(ref)
+        if error is not None:
+            return error
+        try:
+            payload = await capabilities.read_capabilities(supervisor.context, duid)
+        except RoutineExecutionError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=504)
+        return JSONResponse({"duid": duid, **payload})
 
     @app.post("/admin/api/auth")
     async def admin_auth_update(request: Request) -> JSONResponse:
