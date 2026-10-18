@@ -1694,3 +1694,67 @@ def test_catchall_requests_are_not_logged_as_activity_but_named_routes_are(tmp_p
     routes = [entry.get("route") for entry in log_entries]
     assert "catchall" not in routes
     assert "region" in routes
+
+
+def test_admin_debug_send_command_requires_auth_and_known_device(tmp_path: Path) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    paths = resolve_paths(config_file, config)
+    supervisor = ReleaseSupervisor(config=config, paths=paths)
+    client = TestClient(supervisor.app)
+
+    unauthenticated = client.post("/admin/api/debug/send_command", json={"duid": "x", "method": "get_status"})
+    assert unauthenticated.status_code == 401
+
+    client.post("/admin/api/login", json={"password": "correct horse battery staple"})
+
+    missing_fields = client.post("/admin/api/debug/send_command", json={})
+    assert missing_fields.status_code == 400
+
+    unknown_device = client.post("/admin/api/debug/send_command", json={"duid": "no-such-device", "method": "get_status"})
+    assert unknown_device.status_code == 404
+
+
+def test_admin_debug_send_command_forwards_method_and_returns_the_reply(tmp_path: Path, monkeypatch) -> None:
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    paths = resolve_paths(config_file, config)
+    paths.inventory_path.parent.mkdir(parents=True, exist_ok=True)
+    paths.inventory_path.write_text(
+        json.dumps({"devices": [{"duid": "debug-duid", "name": "Debug", "model": "roborock.vacuum.a101"}]}) + "\n",
+        encoding="utf-8",
+    )
+    supervisor = ReleaseSupervisor(config=config, paths=paths)
+    client = TestClient(supervisor.app)
+    client.post("/admin/api/login", json={"password": "correct horse battery staple"})
+
+    calls: dict[str, object] = {}
+
+    class FakeRoutineMqttClient:
+        def __init__(self, context, device, logger):
+            calls["device"] = device
+
+        async def connect(self):
+            calls["connected"] = True
+
+        async def send_command(self, method, params):
+            calls["method"] = method
+            calls["params"] = params
+            return {"status": 65535}
+
+        async def close(self):
+            calls["closed"] = True
+
+    monkeypatch.setattr("roborock_local_server.standalone_admin._RoutineMqttClient", FakeRoutineMqttClient)
+
+    response = client.post(
+        "/admin/api/debug/send_command",
+        json={"duid": "debug-duid", "method": "get_map_beautification_status"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {"result": {"status": 65535}}
+    assert calls["device"]["duid"] == "debug-duid"
+    assert calls["method"] == "get_map_beautification_status"
+    assert calls["params"] == []
+    assert calls["connected"] is True
+    assert calls["closed"] is True
