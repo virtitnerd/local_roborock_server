@@ -6,15 +6,16 @@ nothing and could never change the schedules the cloud imported. The topic
 bridge hands matching requests here instead of forwarding them to the robot.
 
 Deliberately not handled here: get/set/upd/del_server_timer, the newer sibling
-protocol some firmware speaks instead of (or alongside) this one. A robot that
-uses server_timer stores the schedule itself and fires it autonomously from its
-own onboard clock, confirmed live: a server_timer schedule fired at its exact
-scheduled second with no preceding request from any client, server, or cloud.
-Intercepting it here, tried once, answers it from this store instead of the
-robot, which hides the robot's real native schedules from every client and
-caused real data loss (the official app auto-deletes server_timer entries it
-doesn't recognize when its schedule screen opens). server_timer must always be
-left to forward to the robot untouched; it needs no help from this server.
+protocol some firmware speaks instead of (or alongside) this one. The robot
+stores those entries itself and the official app reads them back from it, so
+they must always forward to the robot untouched. Answering them from this store
+instead, tried once, hid the robot's real schedules from every client reading
+through the server, and the official app then deleted them (it removes
+server_timer entries it does not recognize when its schedule screen opens).
+
+What runs a server_timer schedule is the cloud's own record of it, the job the
+official app also writes to /user/devices/{duid}/jobs, which ScheduleRunner
+fires like any other. The robot was not seen to run them itself.
 """
 
 from __future__ import annotations
@@ -54,18 +55,20 @@ class TimerRequestError(ValueError):
 
 
 def device_cron(cron: str) -> str | None:
-    """Cron in the 'm h * * dow' form clients show, or None if it can't be represented.
+    """Cron in the robot's own 'm h dom month dow' form, with '?' written as '*'.
 
-    Date-restricted (day-of-month or month) one-off jobs have no equivalent in the
-    robot's timer format, so they are left out of get_timer rather than shown wrong.
+    A one-time schedule pins the day of the month and the month ('15 23 18 10 *'), exactly as
+    the robot and the official app write it (confirmed live), so it is shown like any other.
+    A job that pins only one of the two has no such form and is left out of get_timer rather
+    than shown wrong.
     """
     fields = str(cron or "").split()
     if len(fields) != 5:
         return None
-    minute, hour, dom, month, dow = fields
-    if dom not in ("*", "?") or month not in ("*", "?"):
+    minute, hour, dom, month, dow = (field if field != "?" else "*" for field in fields)
+    if (dom == "*") != (month == "*"):
         return None
-    return f"{minute} {hour} * * {'*' if dow in ('*', '?') else dow}"
+    return f"{minute} {hour} {dom} {month} {dow}"
 
 
 def _timer_entry(job: dict[str, Any]) -> list[Any] | None:

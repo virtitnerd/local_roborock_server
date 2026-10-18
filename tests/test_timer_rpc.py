@@ -57,12 +57,30 @@ def ctx(tmp_path):
 
 def test_get_timer_lists_cloud_schedules_in_the_shape_localrock_parses(ctx):
     result = timer_rpc.handle_timer_request(ctx, DUID, "get_timer", None)
-    # Date-restricted one-off (Dec 15) can't be shown as a weekly timer, so it is left out.
+    # The one-off (Dec 15) keeps its day and month, the form the robot and the official app use.
     settings = {"repeat": 1, "water_box_mode": 203, "segments": "0", "fan_power": 104, "mop_mode": 300}
     assert result == [
         ["3549431", "on", ["00 11 * * 1,3,5", ["start_clean", settings]]],
         ["3549434", "off", ["00 11 * * 0,6", ["start_clean", settings]]],
+        ["3878757", "on", ["03 13 15 12 *", ["start_clean", settings]]],
     ]
+
+
+@pytest.mark.parametrize(
+    ("cron", "expected"),
+    [
+        ("15 23 18 10 ?", "15 23 18 10 *"),
+        ("15 23 18 10 *", "15 23 18 10 *"),
+        ("00 11 ? * 1,3,5", "00 11 * * 1,3,5"),
+        ("0 8 * * 0,1,2,3,4,5,6", "0 8 * * 0,1,2,3,4,5,6"),
+        # Only one of day and month pinned has no one-time form.
+        ("0 8 15 * *", None),
+        ("0 8 * 10 *", None),
+        ("not a cron", None),
+    ],
+)
+def test_device_cron_keeps_a_one_time_schedules_date(cron, expected):
+    assert timer_rpc.device_cron(cron) == expected
 
 
 def test_set_timer_creates_a_job_and_get_timer_returns_it(ctx):
@@ -122,7 +140,7 @@ def test_interceptor_answers_get_timer_with_an_encrypted_rpc_response(ctx):
     assert reply is not None
     response = _decode_reply(reply)
     assert response.request_id == 4242
-    assert [entry[0] for entry in response.data] == ["3549431", "3549434"]
+    assert [entry[0] for entry in response.data] == ["3549431", "3549434", "3878757"]
 
 
 def test_interceptor_forwards_everything_that_is_not_a_timer_request(ctx):
@@ -136,8 +154,8 @@ def test_interceptor_forwards_everything_that_is_not_a_timer_request(ctx):
     "method", ["get_server_timer", "set_server_timer", "upd_server_timer", "del_server_timer"]
 )
 def test_interceptor_leaves_server_timer_to_the_robot(ctx, method):
-    # A robot that speaks server_timer stores the schedule itself and fires it from its
-    # own clock; answering this locally hides the robot's real schedules from every
+    # A robot that speaks server_timer stores those entries itself and the official app reads
+    # them back from it; answering this locally hides the robot's real schedules from every
     # client and has caused real data loss. This must always forward, never answer here.
     interceptor = timer_rpc.TimerRpcInterceptor(ctx)
     assert interceptor(DUID, _encode_request(method, [])) is None
