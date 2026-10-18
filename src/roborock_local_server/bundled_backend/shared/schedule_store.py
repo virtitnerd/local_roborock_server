@@ -51,11 +51,32 @@ def _normalize_setting(key: str, value: Any) -> Any:
 
 
 def job_settings(job: dict[str, Any]) -> dict[str, Any]:
-    """The vac/mop settings a job carries, as a flat dict."""
+    """The vac/mop settings a job carries, as a flat dict.
+
+    ``name``, when the job has one, rides along too, outside ``JOB_SETTING_KEYS``: it is not a
+    vac/mop setting a client edits, it is the official app's own marker that this job is its
+    HTTP-side mirror of a server_timer schedule (POST/PUT /user/devices/{duid}/jobs carries it
+    in exactly this spot, confirmed live), not a schedule this server owns. See
+    ``schedule_runner.due_jobs``, which must never fire one of these: the robot already does,
+    autonomously, and firing it again here would be a duplicate clean.
+    """
     param = job.get("param")
     params = param.get("params") if isinstance(param, dict) else None
     entry = params[0] if isinstance(params, list) and params and isinstance(params[0], dict) else {}
-    return {key: entry[key] for key in JOB_SETTING_KEYS if key in entry}
+    settings = {key: entry[key] for key in JOB_SETTING_KEYS if key in entry}
+    name = entry.get("name")
+    if isinstance(name, str) and name:
+        settings["name"] = name
+    return settings
+
+
+def mirrors_server_timer(job: dict[str, Any]) -> bool:
+    """Whether ``job`` is the official app's HTTP-side mirror of a server_timer schedule.
+
+    Such a job exists here only so legacy get_timer clients can see it; it must never be
+    scheduled to fire, since the robot already fires it on its own.
+    """
+    return bool(job_settings(job).get("name"))
 
 
 def merge_job_settings(param: dict[str, Any] | None, settings: dict[str, Any]) -> dict[str, Any]:

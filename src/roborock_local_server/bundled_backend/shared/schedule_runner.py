@@ -19,7 +19,7 @@ from .constants import DEFAULT_TIMEZONE
 from .data_helpers import as_bool
 from .inventory_io import load_inventory
 from .routine_runner import RoutineExecutionError, RoutineStep, get_routine_runner
-from .schedule_store import set_enabled
+from .schedule_store import mirrors_server_timer, set_enabled
 
 if TYPE_CHECKING:
     from .context import ServerContext
@@ -247,6 +247,10 @@ class ScheduleRunner:
                 continue
             for job in jobs:
                 if not isinstance(job, dict) or not as_bool(job.get("enabled", True), True):
+                    continue
+                if mirrors_server_timer(job):
+                    # The official app's own HTTP-side copy of a server_timer schedule; the robot
+                    # already fires it autonomously, so this server must not fire it too.
                     continue
                 try:
                     spec = parse_cron(str(job.get("cron") or ""))

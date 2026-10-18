@@ -12,6 +12,9 @@ NEW_YORK = "America/New_York"
 
 
 def _job(**overrides):
+    # A genuine schedule this server owns and must fire: no "name", unlike the official app's
+    # own HTTP-side mirror of a server_timer schedule (see test_schedule_store.py), which this
+    # server must never fire since the robot already does, on its own.
     job = {
         "id": 3549431,
         "cron": "00 11 ? * 1,3,5",
@@ -30,7 +33,6 @@ def _job(**overrides):
                     "mop_mode": 300,
                     "clean_mop": 1,
                     "map_index": -1,
-                    "name": "1759965417864",
                 }
             ],
         },
@@ -149,6 +151,19 @@ def test_one_shot_job_disables_itself_after_firing(tmp_path, monkeypatch):
 def test_string_typed_disabled_flag_is_respected(tmp_path, monkeypatch, disabled_value):
     # Imported inventory stores booleans loosely ("false", 0); "false" must not read as enabled.
     runner, _ctx, fake = _runner_with_inventory(tmp_path, monkeypatch, [_job(enabled=disabled_value)])
+    runner.tick(_utc(2026, 9, 28, 14, 59, 40))
+    runner.tick(_utc(2026, 9, 28, 15, 0, 5))
+    assert fake.started == []
+
+
+def test_tick_never_fires_the_official_apps_http_side_mirror_of_a_server_timer_schedule(
+    tmp_path, monkeypatch
+):
+    # "name" is the official app's own marker (POST/PUT /user/devices/{duid}/jobs, confirmed
+    # live) that this job is a read-only copy of a schedule the robot already fires itself.
+    mirror = _job()
+    mirror["param"]["params"][0]["name"] = "1759965417864"
+    runner, _ctx, fake = _runner_with_inventory(tmp_path, monkeypatch, [mirror])
     runner.tick(_utc(2026, 9, 28, 14, 59, 40))
     runner.tick(_utc(2026, 9, 28, 15, 0, 5))
     assert fake.started == []
