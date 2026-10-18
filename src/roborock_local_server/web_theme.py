@@ -272,31 +272,6 @@ STYLE_CSS = dedent(
     .rls-fact-value { word-break: break-all; }
     .rls-details > summary { cursor: pointer; color: var(--rls-text-muted); }
 
-    .rls-schedule-row {
-        display: grid; grid-template-columns: minmax(9rem, 1fr) minmax(12rem, 2.4fr) 15rem;
-        gap: .5em 1.25em; align-items: center; padding: .7em 0; border-bottom: 1px solid var(--rls-border);
-    }
-    .rls-schedule-row:last-child { border-bottom: none; }
-    .rls-schedule-row.off .rls-schedule-time { color: var(--rls-text-muted); }
-    .rls-schedule-time { font-size: 1.25rem; font-weight: 600; }
-    .rls-schedule-actions { display: flex; align-items: center; gap: .35em; justify-content: flex-end; }
-    .rls-schedule-form {
-        margin-top: 1em; padding: 1em 1.1em; border-radius: 8px;
-        border: 1px solid var(--rls-border); background: var(--rls-bg);
-    }
-    .rls-form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: .9em 1.25em; }
-    .rls-field { display: flex; flex-direction: column; gap: .3em; }
-    .rls-field select, .rls-field input[type="time"] {
-        color: var(--rls-text); background: var(--rls-surface);
-        border: 1px solid var(--rls-border); border-radius: 6px; padding: .45em .6em; height: auto;
-    }
-    .rls-field select:disabled { opacity: .5; }
-    #schedDays { gap: .4em 1.6em; }
-    @media (max-width: 600px) {
-        .rls-schedule-row { grid-template-columns: 1fr; }
-        .rls-schedule-actions { justify-content: flex-start; }
-    }
-
     .hidden { display: none !important; }
     /* Pushes a heading row's button to the far end while the row has room. */
     .rls-spacer { flex: 1; }

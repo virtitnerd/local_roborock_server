@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 from textwrap import dedent
-import time
 from typing import Any
 
 from fastapi import FastAPI, Request
@@ -100,65 +99,6 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
             </div>
             <div id="deviceFacts" class="rls-facts" style="margin-top:14px"></div>
             <div id="deviceNotice" class="alert-banner"></div>
-          </div>
-
-          <div class="container">
-            <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-              <h4 class="header rls-heading" style="margin:0">Schedules</h4>
-              <span id="scheduleZone" class="rls-muted"></span>
-              <span class="rls-spacer"></span>
-              <button id="addSchedule" type="button" class="btn waves-effect waves-light">
-                Add schedule<i class="material-icons right">add</i>
-              </button>
-            </div>
-            <div id="scheduleError" class="alert-banner error"></div>
-            <div id="scheduleList" style="margin-top:12px"></div>
-
-            <div id="scheduleForm" class="rls-schedule-form hidden">
-              <div id="scheduleFormTitle" style="font-weight:600;margin-bottom:10px"></div>
-              <div class="rls-form-grid">
-                <label class="rls-field">
-                  <span class="rls-fact-label">Time</span>
-                  <input id="schedTime" type="time" class="browser-default" value="07:00">
-                </label>
-                <label class="rls-field">
-                  <span class="rls-fact-label">Cleaning</span>
-                  <select id="schedMode" class="browser-default">
-                    <option value="keep">Use the vacuum's current settings</option>
-                    <option value="vacuum">Vacuum only</option>
-                    <option value="vac_mop">Vacuum and mop</option>
-                    <option value="mop">Mop only</option>
-                  </select>
-                </label>
-                <label class="rls-field">
-                  <span class="rls-fact-label">Suction</span>
-                  <select id="schedSuction" class="browser-default"></select>
-                </label>
-                <label class="rls-field">
-                  <span class="rls-fact-label">Water level</span>
-                  <select id="schedWater" class="browser-default"></select>
-                </label>
-                <label class="rls-field">
-                  <span class="rls-fact-label">Mop route</span>
-                  <select id="schedRoute" class="browser-default"></select>
-                </label>
-                <label class="rls-field">
-                  <span class="rls-fact-label">Passes</span>
-                  <select id="schedRepeat" class="browser-default">
-                    <option value="1">1</option><option value="2">2</option><option value="3">3</option>
-                  </select>
-                </label>
-              </div>
-              <div class="rls-fact-label" style="margin-top:12px">Days (none selected means every day)</div>
-              <div id="schedDays" class="rls-chips" style="margin-top:6px"></div>
-              <p style="margin:12px 0 0">
-                <label><input id="schedEnabled" type="checkbox" checked><span>Enabled</span></label>
-              </p>
-              <div style="margin-top:14px;display:flex;gap:10px;flex-wrap:wrap">
-                <button id="saveSchedule" type="button" class="btn waves-effect waves-light">Save</button>
-                <button id="cancelSchedule" type="button" class="btn-flat waves-effect">Cancel</button>
-              </div>
-            </div>
           </div>
 
           <div class="container">
@@ -296,6 +236,7 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
           return value ? "Yes" : "No";
         }}
         let vacuumList = [];
+        let currentDevice = "";
         const deviceKey = (vac) => vac.duid || vac.did || "";
         const vacuumLabel = (vac) => vac.name || vac.did || vac.duid || "Unknown vacuum";
         function currentSelection() {{
@@ -383,290 +324,6 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
           document.getElementById("deviceRaw").textContent = JSON.stringify(redacted, null, 2);
         }}
 
-        // ---- Schedules -------------------------------------------------------------
-        const WEEKDAYS = [[1, "Mon"], [2, "Tue"], [3, "Wed"], [4, "Thu"], [5, "Fri"], [6, "Sat"], [0, "Sun"]];
-        const KEEP = "Keep the vacuum's setting";
-        const SUCTION = [["", KEEP], ["101", "Quiet"], ["102", "Balanced"], ["103", "Turbo"], ["104", "Max"],
-                         ["108", "Max+"], ["110", "Smart"]];
-        const WATER = [["", KEEP], ["201", "Low"], ["202", "Medium"], ["203", "High"], ["209", "Smart"]];
-        const ROUTE = [["", KEEP], ["300", "Standard"], ["301", "Deep"], ["303", "Deep+"], ["304", "Fast"],
-                       ["306", "Smart"]];
-        let schedulesDevice = "";
-        let schedulesLoadedAt = 0;
-        let scheduleZone = "";
-        let editingScheduleId = null;
-        const field = (id) => document.getElementById(id);
-        const formOpen = () => !field("scheduleForm").classList.contains("hidden");
-
-        function fillSelect(id, options) {{
-          const select = field(id);
-          select.innerHTML = "";
-          for (const [value, label] of options) {{
-            const option = document.createElement("option");
-            option.value = value;
-            option.textContent = label;
-            select.appendChild(option);
-          }}
-        }}
-        function showScheduleError(message) {{
-          const banner = field("scheduleError");
-          banner.textContent = message || "";
-          banner.classList.toggle("shown", Boolean(message));
-        }}
-        function modeFromSettings(settings) {{
-          if (settings.water_box_mode === 200) return "vacuum";
-          if (settings.fan_power === 105) return "mop";
-          if (settings.water_box_mode !== undefined) return "vac_mop";
-          return "keep";
-        }}
-        function describeSettings(settings) {{
-          const label = (list, value) => (list.find(([key]) => key === String(value)) || [])[1];
-          const mode = modeFromSettings(settings);
-          const parts = [{{keep: "Vacuum's current settings", vacuum: "Vacuum only", vac_mop: "Vacuum and mop",
-                           mop: "Mop only"}}[mode]];
-          if (settings.fan_power !== undefined && mode !== "mop") {{
-            const name = label(SUCTION, settings.fan_power);
-            if (name) parts.push(`${{name}} suction`);
-          }}
-          if (settings.water_box_mode !== undefined && mode !== "vacuum") {{
-            const name = label(WATER, settings.water_box_mode);
-            if (name) parts.push(`${{name}} water`);
-          }}
-          if (settings.mop_mode !== undefined && mode !== "vacuum") {{
-            const name = label(ROUTE, settings.mop_mode);
-            if (name) parts.push(`${{name}} route`);
-          }}
-          if (Number(settings.repeat) > 1) parts.push(`${{settings.repeat}} passes`);
-          if (settings.segments && settings.segments !== "0") parts.push("selected rooms");
-          return parts.join(", ");
-        }}
-        function describeDays(weekdays) {{
-          if (!weekdays || !weekdays.length) return "Every day";
-          return WEEKDAYS.filter(([day]) => weekdays.includes(day)).map(([, name]) => name).join(", ");
-        }}
-        function describeNextRun(schedule) {{
-          if (!schedule.enabled) return "Off";
-          if (!schedule.next_fire_time) return "Not scheduled";
-          const options = {{weekday: "short", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit"}};
-          try {{
-            return new Date(schedule.next_fire_time).toLocaleString([], Object.assign(
-              options, {{timeZone: schedule.time_zone || scheduleZone || undefined}}));
-          }} catch (error) {{
-            return new Date(schedule.next_fire_time).toLocaleString();
-          }}
-        }}
-        function updateScheduleFormState() {{
-          // Only the options that apply to the chosen cleaning mode are editable.
-          const mode = field("schedMode").value;
-          const keep = mode === "keep";
-          field("schedSuction").disabled = keep || mode === "mop";
-          field("schedWater").disabled = keep || mode === "vacuum";
-          field("schedRoute").disabled = keep || mode === "vacuum";
-        }}
-        function openScheduleForm(schedule) {{
-          editingScheduleId = schedule ? schedule.id : null;
-          const settings = schedule ? schedule.settings || {{}} : {{}};
-          field("scheduleFormTitle").textContent = schedule ? "Edit schedule" : "New schedule";
-          field("schedTime").value = (schedule && schedule.time) || "07:00";
-          field("schedMode").value = modeFromSettings(settings);
-          field("schedSuction").value = settings.fan_power !== undefined && settings.fan_power !== 105
-            ? String(settings.fan_power) : "";
-          field("schedWater").value = settings.water_box_mode !== undefined && settings.water_box_mode !== 200
-            ? String(settings.water_box_mode) : "";
-          field("schedRoute").value = settings.mop_mode !== undefined ? String(settings.mop_mode) : "";
-          field("schedRepeat").value = String(Math.min(3, Math.max(1, Number(settings.repeat) || 1)));
-          field("schedEnabled").checked = schedule ? Boolean(schedule.enabled) : true;
-          const chosen = new Set((schedule && schedule.weekdays) || []);
-          for (const [day] of WEEKDAYS) field(`schedDay${{day}}`).checked = chosen.has(day);
-          updateScheduleFormState();
-          showScheduleError("");
-          const form = field("scheduleForm");
-          form.classList.remove("hidden");
-          form.scrollIntoView({{block: "nearest", behavior: "smooth"}});
-        }}
-        function closeScheduleForm() {{
-          editingScheduleId = null;
-          field("scheduleForm").classList.add("hidden");
-        }}
-        function settingsFromForm() {{
-          const number = (value) => (value === "" ? null : Number(value));
-          const mode = field("schedMode").value;
-          const settings = {{
-            repeat: Number(field("schedRepeat").value),
-            fan_power: number(field("schedSuction").value),
-            water_box_mode: number(field("schedWater").value),
-            mop_mode: number(field("schedRoute").value),
-          }};
-          if (mode === "keep") {{
-            settings.fan_power = null;
-            settings.water_box_mode = null;
-            settings.mop_mode = null;
-          }} else if (mode === "vacuum") {{
-            settings.water_box_mode = 200;
-            settings.mop_mode = null;
-          }} else if (mode === "mop") {{
-            settings.fan_power = 105;
-            if (settings.water_box_mode === null) settings.water_box_mode = 202;
-          }} else if (settings.water_box_mode === null) {{
-            settings.water_box_mode = 202;
-          }}
-          return settings;
-        }}
-        async function scheduleRequest(deviceRef, method, scheduleId, body) {{
-          const base = `/admin/api/vacuums/${{encodeURIComponent(deviceRef)}}/schedules`;
-          const url = scheduleId === null ? base : `${{base}}/${{encodeURIComponent(scheduleId)}}`;
-          return fetchJson(url, {{
-            method,
-            headers: {{"Content-Type": "application/json"}},
-            body: body === undefined ? undefined : JSON.stringify(body),
-          }});
-        }}
-        function currentDeviceRef() {{
-          return schedulesDevice;
-        }}
-        function renderSchedules(payload) {{
-          scheduleZone = payload.time_zone || "";
-          field("scheduleZone").textContent = scheduleZone ? `Times are in ${{scheduleZone}}` : "";
-          const list = field("scheduleList");
-          list.innerHTML = "";
-          const schedules = Array.isArray(payload.schedules) ? payload.schedules : [];
-          if (!schedules.length) {{
-            const empty = document.createElement("div");
-            empty.className = "rls-muted";
-            empty.textContent = "No schedules yet.";
-            list.appendChild(empty);
-            return;
-          }}
-          for (const schedule of schedules) {{
-            const row = document.createElement("div");
-            row.className = "rls-schedule-row" + (schedule.enabled ? "" : " off");
-
-            const when = document.createElement("div");
-            const time = document.createElement("div");
-            time.className = "rls-schedule-time";
-            time.textContent = schedule.simple ? schedule.time : schedule.cron;
-            const days = document.createElement("div");
-            days.className = "rls-muted";
-            days.textContent = schedule.simple ? describeDays(schedule.weekdays) : "Custom schedule (edit not supported)";
-            when.appendChild(time);
-            when.appendChild(days);
-
-            const what = document.createElement("div");
-            const summary = document.createElement("div");
-            summary.textContent = describeSettings(schedule.settings || {{}});
-            const next = document.createElement("div");
-            next.className = "rls-muted";
-            next.textContent = `Next: ${{describeNextRun(schedule)}}`;
-            what.appendChild(summary);
-            what.appendChild(next);
-
-            const actions = document.createElement("div");
-            actions.className = "rls-schedule-actions";
-            // Materialize's switch is div.switch > label > input + span.lever.
-            const toggle = document.createElement("div");
-            toggle.className = "switch";
-            const toggleLabel = document.createElement("label");
-            toggleLabel.title = schedule.enabled ? "Turn off" : "Turn on";
-            const box = document.createElement("input");
-            box.type = "checkbox";
-            box.checked = Boolean(schedule.enabled);
-            const lever = document.createElement("span");
-            lever.className = "lever";
-            toggleLabel.appendChild(box);
-            toggleLabel.appendChild(lever);
-            toggle.appendChild(toggleLabel);
-            box.addEventListener("change", async () => {{
-              try {{
-                await scheduleRequest(currentDeviceRef(), "PUT", schedule.id, {{enabled: box.checked}});
-                await loadSchedules(currentDeviceRef());
-              }} catch (error) {{
-                showScheduleError(error.message);
-                box.checked = !box.checked;
-              }}
-            }});
-            actions.appendChild(toggle);
-
-            if (schedule.simple) {{
-              const edit = document.createElement("button");
-              edit.type = "button";
-              edit.className = "btn-flat waves-effect";
-              edit.textContent = "Edit";
-              edit.addEventListener("click", () => openScheduleForm(schedule));
-              actions.appendChild(edit);
-            }}
-
-            const remove = document.createElement("button");
-            remove.type = "button";
-            remove.className = "btn-flat waves-effect";
-            remove.textContent = "Delete";
-            let armed = false;
-            remove.addEventListener("click", async () => {{
-              if (!armed) {{
-                armed = true;
-                remove.textContent = "Confirm delete";
-                setTimeout(() => {{ armed = false; remove.textContent = "Delete"; }}, 3000);
-                return;
-              }}
-              try {{
-                await scheduleRequest(currentDeviceRef(), "DELETE", schedule.id);
-                await loadSchedules(currentDeviceRef());
-              }} catch (error) {{
-                showScheduleError(error.message);
-              }}
-            }});
-            actions.appendChild(remove);
-
-            row.appendChild(when);
-            row.appendChild(what);
-            row.appendChild(actions);
-            list.appendChild(row);
-          }}
-        }}
-        async function loadSchedules(deviceRef) {{
-          try {{
-            const payload = await fetchJson(`/admin/api/vacuums/${{encodeURIComponent(deviceRef)}}/schedules`);
-            if (deviceRef !== schedulesDevice) return;
-            showScheduleError("");
-            renderSchedules(payload);
-          }} catch (error) {{
-            field("scheduleList").innerHTML = "";
-            showScheduleError(error.message);
-          }}
-          schedulesLoadedAt = Date.now();
-        }}
-        fillSelect("schedSuction", SUCTION);
-        fillSelect("schedWater", WATER);
-        fillSelect("schedRoute", ROUTE);
-        for (const [day, name] of WEEKDAYS) {{
-          const label = document.createElement("label");
-          const input = document.createElement("input");
-          input.type = "checkbox";
-          input.id = `schedDay${{day}}`;
-          const text = document.createElement("span");
-          text.textContent = name;
-          label.appendChild(input);
-          label.appendChild(text);
-          field("schedDays").appendChild(label);
-        }}
-        field("schedMode").addEventListener("change", updateScheduleFormState);
-        field("addSchedule").addEventListener("click", () => openScheduleForm(null));
-        field("cancelSchedule").addEventListener("click", closeScheduleForm);
-        field("saveSchedule").addEventListener("click", async () => {{
-          const body = {{
-            time: field("schedTime").value,
-            weekdays: WEEKDAYS.map(([day]) => day).filter((day) => field(`schedDay${{day}}`).checked),
-            enabled: field("schedEnabled").checked,
-            settings: settingsFromForm(),
-          }};
-          try {{
-            await scheduleRequest(
-              currentDeviceRef(), editingScheduleId === null ? "POST" : "PUT", editingScheduleId, body);
-            closeScheduleForm();
-            await loadSchedules(currentDeviceRef());
-          }} catch (error) {{
-            showScheduleError(error.message);
-          }}
-        }});
         // ---- Map backups (read-only probe) -------------------------------------------
         function formatRobotTime(value) {{
           const seconds = Number(value);
@@ -704,7 +361,7 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
         }}
         field("checkMaps").addEventListener("click", async () => {{
           const button = field("checkMaps");
-          const ref = schedulesDevice;
+          const ref = currentDevice;
           if (!ref) return;
           button.disabled = true;
           const label = button.textContent;
@@ -746,7 +403,7 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
         }}
         field("checkCaps").addEventListener("click", async () => {{
           const button = field("checkCaps");
-          const ref = schedulesDevice;
+          const ref = currentDevice;
           if (!ref) return;
           button.disabled = true;
           const label = button.textContent;
@@ -913,15 +570,7 @@ def _admin_dashboard_html(project_support: dict[str, Any]) -> str:
           if (!vac) return;
           renderDevice(vac);
           const ref = deviceKey(vac);
-          if (schedulesDevice !== ref) {{
-            schedulesDevice = ref;
-            closeScheduleForm();
-            field("scheduleList").innerHTML = "";
-            await loadSchedules(ref);
-          }} else if (!formOpen() && Date.now() - schedulesLoadedAt > 15000) {{
-            // Never re-render while the form is open, or an edit in progress would be lost.
-            await loadSchedules(ref);
-          }}
+          currentDevice = ref;
           renderActivity(await fetchJson(`/admin/api/activity?device=${{encodeURIComponent(ref)}}`));
         }}
         window.addEventListener("hashchange", () => refresh().catch(() => {{}}));
@@ -1069,17 +718,6 @@ def register_standalone_admin_routes(
             return JSONResponse({"error": f"Unknown vacuum {device!r}"}, status_code=404)
         return JSONResponse(payload)
 
-    # Imported here, not at module level: `shared` only lands on sys.path once the
-    # backend package has been imported, which happens after this module loads.
-    from shared.constants import DEFAULT_TIMEZONE
-    from shared.schedule_store import SettingsError, delete_job, list_jobs, merge_job_settings, upsert_job
-    from shared.schedule_view import ScheduleInputError, build_cron, job_view
-
-    def _schedule_zone() -> str:
-        return str(
-            getattr(supervisor.context, "timezone", "") or supervisor.config.network.timezone or DEFAULT_TIMEZONE
-        )
-
     def _vacuum_duid(ref: str) -> tuple[str, JSONResponse | None]:
         """The inventory DUID schedules are filed under for this vacuum, or an error response."""
         reference = ref.strip()
@@ -1097,101 +735,6 @@ def register_standalone_admin_routes(
                 )
             return duid, None
         return "", JSONResponse({"error": f"Unknown vacuum {reference!r}"}, status_code=404)
-
-    async def _json_object(request: Request) -> tuple[dict[str, Any], JSONResponse | None]:
-        try:
-            body = await request.json()
-        except json.JSONDecodeError:
-            return {}, JSONResponse({"error": "Invalid JSON body"}, status_code=400)
-        if not isinstance(body, dict):
-            return {}, JSONResponse({"error": "JSON body must be an object"}, status_code=400)
-        return body, None
-
-    @app.get("/admin/api/vacuums/{ref}/schedules")
-    async def admin_schedules(ref: str, request: Request) -> JSONResponse:
-        supervisor._require_admin(request)
-        duid, error = _vacuum_duid(ref)
-        if error is not None:
-            return error
-        zone = _schedule_zone()
-        return JSONResponse(
-            {
-                "duid": duid,
-                "time_zone": zone,
-                "schedules": [
-                    job_view(job, default_timezone=zone) for job in list_jobs(supervisor.context, duid)
-                ],
-            }
-        )
-
-    @app.post("/admin/api/vacuums/{ref}/schedules")
-    async def admin_schedule_create(ref: str, request: Request) -> JSONResponse:
-        supervisor._require_admin(request)
-        duid, error = _vacuum_duid(ref)
-        if error is not None:
-            return error
-        body, error = await _json_object(request)
-        if error is not None:
-            return error
-        try:
-            cron = build_cron(body.get("time"), body.get("weekdays") or [])
-            param = merge_job_settings(None, body.get("settings") or {})
-        except (ScheduleInputError, SettingsError) as exc:
-            return JSONResponse({"error": str(exc)}, status_code=400)
-        zone = _schedule_zone()
-        job = upsert_job(
-            supervisor.context,
-            duid,
-            job_id=int(time.time()),
-            cron=cron,
-            enabled=bool(body.get("enabled", True)),
-            time_zone=zone,
-            param=param,
-        )
-        return JSONResponse({"schedule": job_view(job, default_timezone=zone)})
-
-    @app.put("/admin/api/vacuums/{ref}/schedules/{job_id}")
-    async def admin_schedule_update(ref: str, job_id: str, request: Request) -> JSONResponse:
-        supervisor._require_admin(request)
-        duid, error = _vacuum_duid(ref)
-        if error is not None:
-            return error
-        existing = next((job for job in list_jobs(supervisor.context, duid) if str(job.get("id")) == job_id), None)
-        if existing is None:
-            return JSONResponse({"error": "Schedule not found"}, status_code=404)
-        body, error = await _json_object(request)
-        if error is not None:
-            return error
-        try:
-            if "time" in body or "weekdays" in body:
-                if "time" not in body or "weekdays" not in body:
-                    raise ScheduleInputError("time and weekdays must be sent together")
-                cron = build_cron(body.get("time"), body.get("weekdays") or [])
-            else:
-                cron = str(existing.get("cron") or "")
-            param = merge_job_settings(existing.get("param"), body["settings"]) if "settings" in body else None
-        except (ScheduleInputError, SettingsError) as exc:
-            return JSONResponse({"error": str(exc)}, status_code=400)
-        zone = _schedule_zone()
-        job = upsert_job(
-            supervisor.context,
-            duid,
-            job_id=job_id,
-            cron=cron,
-            enabled=bool(body.get("enabled", existing.get("enabled", True))),
-            param=param,
-        )
-        return JSONResponse({"schedule": job_view(job, default_timezone=zone)})
-
-    @app.delete("/admin/api/vacuums/{ref}/schedules/{job_id}")
-    async def admin_schedule_delete(ref: str, job_id: str, request: Request) -> JSONResponse:
-        supervisor._require_admin(request)
-        duid, error = _vacuum_duid(ref)
-        if error is not None:
-            return error
-        if not delete_job(supervisor.context, duid, job_id):
-            return JSONResponse({"error": "Schedule not found"}, status_code=404)
-        return JSONResponse({"ok": True})
 
     @app.get("/admin/api/vacuums/{ref}/maps")
     async def admin_map_backups(ref: str, request: Request) -> JSONResponse:
