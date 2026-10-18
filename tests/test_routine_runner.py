@@ -847,7 +847,9 @@ def test_a_schedule_start_is_one_app_start_carrying_the_whole_entry(tmp_path: Pa
         (
             RoborockCommand.APP_START,
             [{"fan_power": 104, "water_box_mode": 203, "mop_mode": 300,
-              "repeat": 1, "segments": "0", "clean_mop": 1, "map_index": -1}],
+              "repeat": 1, "segments": "0", "clean_mop": 1, "map_index": -1,
+              # "source" 3 is what makes the robot's history say "Schedule" instead of "App".
+              "source": 3}],
         )
     ]
 

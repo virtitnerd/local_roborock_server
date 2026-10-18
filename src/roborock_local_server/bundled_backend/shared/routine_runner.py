@@ -77,6 +77,11 @@ _PARAM_ERROR_CODE = -10005
 # -10005 "Param error" to a value it does not support, such as a route its model lacks.
 _APP_START_KEYS = ("repeat", "water_box_mode", "segments", "fan_power", "mop_mode", "clean_mop", "map_index")
 _APP_START_DEFAULTS = {"repeat": 1, "segments": "0", "clean_mop": 1, "map_index": -1}
+# app_start's "source" field is how the robot learns who started a clean, for its history. 3 is
+# python-roborock's RoborockStartType.schedule, and a robot recorded the clean as "Schedule" in the
+# official app's history; an app start is 2. "start_type", "startType", "start_from", "from" and
+# "trigger" were all accepted but ignored, so the clean was recorded as "App".
+_SCHEDULE_START_SOURCE = 3
 _RESUME_COMMAND_BY_IN_CLEANING: dict[int, RoborockCommand] = {
     RoborockInCleaning.global_clean_not_complete.value: RoborockCommand.APP_START,
     RoborockInCleaning.zone_clean_not_complete.value: RoborockCommand.RESUME_ZONED_CLEAN,
@@ -391,6 +396,7 @@ def commands_for_step(step: RoutineStep) -> list[RoutineCommand]:
     if step.method == SCHEDULE_APP_START:
         entry = _single_start_entry(step)
         body = {**_APP_START_DEFAULTS, **{key: entry[key] for key in _APP_START_KEYS if key in entry}}
+        body["source"] = _SCHEDULE_START_SOURCE
         return [RoutineCommand(RoborockCommand.APP_START, [body])]
     raise RoutineExecutionError(f"Unsupported step method {step.method!r}")
 
