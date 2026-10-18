@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import logging
 from pathlib import Path
@@ -58,6 +58,8 @@ _POST_STEP_SETTLE_TIMEOUT_SECONDS = 10 * 60
 _ACTION_LOCK_RETRY_DELAY_SECONDS = 5.0
 _ACTION_LOCK_RETRY_ATTEMPTS = 6
 from .inventory_io import WEB_API_INVENTORY_FILE
+# A whole-home clean started by a schedule rather than a scene; see commands_for_step.
+SCHEDULE_APP_START = "schedule_app_start"
 _SUPPORTED_METHODS = {
     "do_scenes_app_start",
     "do_scenes_segments",
@@ -69,6 +71,12 @@ _STEP_START_COMMANDS = {
     RoborockCommand.APP_ZONED_CLEAN,
 }
 _ACTION_LOCK_ERROR_CODES = {-10003, -10007}
+_PARAM_ERROR_CODE = -10005
+# What app_start takes in one command, as the official app's own schedule entries carry it. A
+# robot accepted every one of these together and applied the modes (confirmed live); it answers
+# -10005 "Param error" to a value it does not support, such as a route its model lacks.
+_APP_START_KEYS = ("repeat", "water_box_mode", "segments", "fan_power", "mop_mode", "clean_mop", "map_index")
+_APP_START_DEFAULTS = {"repeat": 1, "segments": "0", "clean_mop": 1, "map_index": -1}
 _RESUME_COMMAND_BY_IN_CLEANING: dict[int, RoborockCommand] = {
     RoborockInCleaning.global_clean_not_complete.value: RoborockCommand.APP_START,
     RoborockInCleaning.zone_clean_not_complete.value: RoborockCommand.RESUME_ZONED_CLEAN,
@@ -380,7 +388,23 @@ def commands_for_step(step: RoutineStep) -> list[RoutineCommand]:
             ),
             RoutineCommand(RoborockCommand.APP_START, None),
         ]
+    if step.method == SCHEDULE_APP_START:
+        entry = _single_start_entry(step)
+        body = {**_APP_START_DEFAULTS, **{key: entry[key] for key in _APP_START_KEYS if key in entry}}
+        return [RoutineCommand(RoborockCommand.APP_START, [body])]
     raise RoutineExecutionError(f"Unsupported step method {step.method!r}")
+
+
+def fallback_commands_for_step(step: RoutineStep) -> list[RoutineCommand] | None:
+    """The longer way to run [step], for when the robot refuses the short one; None if there is none.
+
+    A schedule starts with one app_start carrying its settings. A refused command changes nothing,
+    so on "Param error" the same settings are sent as separate commands, which is how a routine
+    always starts a whole-home clean.
+    """
+    if step.method != SCHEDULE_APP_START:
+        return None
+    return commands_for_step(replace(step, method="do_scenes_app_start"))
 
 
 def _is_optional_unsupported_command(command: RoborockCommand, exc: Exception) -> bool:
@@ -1038,6 +1062,29 @@ class RoutineRunner:
                     continue
                 raise
 
+    async def _send_step_commands(
+        self,
+        *,
+        client: _RoutineMqttClient,
+        logger: logging.LoggerAdapter,
+        step: RoutineStep,
+        commands: list[RoutineCommand],
+    ) -> None:
+        for routine_command in commands:
+            logger.info(
+                "Routine step=%s method=%s command=%s params=%s",
+                step.step_id,
+                step.method,
+                routine_command.command.value,
+                routine_command.params,
+            )
+            await self._send_step_command(
+                client=client,
+                logger=logger,
+                step=step,
+                routine_command=routine_command,
+            )
+
     async def _run_scene(self, *, scene: dict[str, Any], steps: list[RoutineStep]) -> None:
         await self._run_steps(scene=scene, steps=steps, sync_scene_tids=True)
 
@@ -1072,22 +1119,21 @@ class RoutineRunner:
             if sync_scene_tids:
                 await self._sync_scene_tids(client=client, scene=scene, device_id=device_id, logger=logger)
             for step_index, step in enumerate(steps):
-                commands = commands_for_step(step)
                 waits_for_step_complete = RoborockDataProtocol.TASK_COMPLETE.value in step.finish_dp_ids
-                for routine_command in commands:
-                    logger.info(
-                        "Routine step=%s method=%s command=%s params=%s",
+                try:
+                    await self._send_step_commands(
+                        client=client, logger=logger, step=step, commands=commands_for_step(step)
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    fallback = fallback_commands_for_step(step)
+                    if fallback is None or _exception_error_code(exc) != _PARAM_ERROR_CODE:
+                        raise
+                    logger.warning(
+                        "Robot refused the single start step=%s (%s); sending the settings as separate commands",
                         step.step_id,
-                        step.method,
-                        routine_command.command.value,
-                        routine_command.params,
+                        _exception_error_message(exc),
                     )
-                    await self._send_step_command(
-                        client=client,
-                        logger=logger,
-                        step=step,
-                        routine_command=routine_command,
-                    )
+                    await self._send_step_commands(client=client, logger=logger, step=step, commands=fallback)
                 if waits_for_step_complete:
                     logger.info("Waiting for ready state step=%s scene=%s", step.step_id, _scene_name(scene))
                     await client.wait_for_step_complete()

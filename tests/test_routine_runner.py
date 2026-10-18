@@ -9,7 +9,12 @@ from roborock.data import StatusV2
 from roborock.exceptions import RoborockException
 from roborock_local_server.bundled_backend.shared.context import ServerContext
 import roborock_local_server.bundled_backend.shared.routine_runner as routine_runner_module
-from roborock_local_server.bundled_backend.shared.routine_runner import RoutineRunner, parse_scene_steps
+from roborock_local_server.bundled_backend.shared.routine_runner import (
+    SCHEDULE_APP_START,
+    RoutineRunner,
+    RoutineStep,
+    parse_scene_steps,
+)
 from roborock.roborock_typing import RoborockCommand
 
 
@@ -797,3 +802,80 @@ def test_query_gives_up_after_the_second_silence(tmp_path: Path, monkeypatch) ->
         asyncio.run(runner.query("dev", RoborockCommand.APP_GET_DRYER_SETTING))
 
     assert AlwaysSilent.attempts == 2
+
+
+def _schedule_step(**entry) -> RoutineStep:
+    return RoutineStep(step_id=1, name="Schedule 1", method=SCHEDULE_APP_START, params=[entry], finish_dp_ids=())
+
+
+def _run_schedule_step(tmp_path: Path, monkeypatch, step: RoutineStep, *, refuse_single_start_with: dict | None):
+    """Run [step] against a fake robot; returns every command it was sent, refused ones included."""
+    sent_commands: list[tuple[RoborockCommand, object]] = []
+
+    class FakeRoutineClient:
+        def __init__(self, context, device, logger) -> None:
+            _ = context, device, logger
+
+        async def connect(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+        async def send_command(self, command, params=None):
+            sent_commands.append((command, params))
+            if refuse_single_start_with is not None and command == RoborockCommand.APP_START and params is not None:
+                raise RoborockException(refuse_single_start_with)
+            return ["ok"]
+
+        async def wait_for_step_complete(self) -> None:
+            return None
+
+    monkeypatch.setattr(routine_runner_module, "_RoutineMqttClient", FakeRoutineClient)
+    scene = _scene(scene_id=1, device_id="6HL2zfniaoYYV01CkVuhkO", name="Schedule 1")
+    runner = RoutineRunner(_test_context(tmp_path))
+    return sent_commands, asyncio.run(runner._run_steps(scene=scene, steps=[step], sync_scene_tids=False))
+
+
+def test_a_schedule_start_is_one_app_start_carrying_the_whole_entry(tmp_path: Path, monkeypatch) -> None:
+    # A robot accepted app_start with all of these together and applied the modes (confirmed live).
+    step = _schedule_step(fan_power=104, water_box_mode=203, mop_mode=300)
+
+    sent, _ = _run_schedule_step(tmp_path, monkeypatch, step, refuse_single_start_with=None)
+
+    assert sent == [
+        (
+            RoborockCommand.APP_START,
+            [{"fan_power": 104, "water_box_mode": 203, "mop_mode": 300,
+              "repeat": 1, "segments": "0", "clean_mop": 1, "map_index": -1}],
+        )
+    ]
+
+
+def test_a_schedule_start_falls_back_to_separate_commands_on_a_param_error(tmp_path: Path, monkeypatch) -> None:
+    # A route the robot's model lacks makes it answer -10005 "Param error", and a refused command
+    # changes nothing, so the same settings go out the longer way.
+    step = _schedule_step(fan_power=104, water_box_mode=203, mop_mode=300)
+
+    sent, _ = _run_schedule_step(
+        tmp_path, monkeypatch, step, refuse_single_start_with={"code": -10005, "message": "Param error"}
+    )
+
+    assert [command for command, _ in sent] == [
+        RoborockCommand.APP_START,
+        RoborockCommand.SET_CUSTOM_MODE,
+        RoborockCommand.SET_WATER_BOX_CUSTOM_MODE,
+        RoborockCommand.SET_MOP_MODE,
+        RoborockCommand.SET_CLEAN_REPEAT_TIMES,
+        RoborockCommand.APP_START,
+    ]
+    assert sent[-1] == (RoborockCommand.APP_START, None)
+
+
+def test_a_schedule_start_does_not_fall_back_on_any_other_refusal(tmp_path: Path, monkeypatch) -> None:
+    step = _schedule_step(fan_power=104)
+
+    with pytest.raises(RoborockException):
+        _run_schedule_step(
+            tmp_path, monkeypatch, step, refuse_single_start_with={"code": -10001, "message": "Busy"}
+        )
