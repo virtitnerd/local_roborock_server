@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
 from textwrap import dedent
 from typing import Any
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from .bundled_backend.shared.routine_runner import _RoutineMqttClient
 from .security import verify_password
+
+_debug_logger = logging.getLogger("roborock_local_server.admin.debug_send_command")
 
 
 def _admin_login_html() -> str:
@@ -351,6 +355,43 @@ def register_standalone_admin_routes(
     async def admin_vacuums(request: Request) -> JSONResponse:
         supervisor._require_admin(request)
         return JSONResponse(supervisor._vacuums_payload())
+
+    @app.post("/admin/api/debug/send_command")
+    async def admin_debug_send_command(request: Request) -> JSONResponse:
+        """Send one raw RPC method straight to a device and return its reply.
+
+        For probing what a robot actually supports: curl this instead of reaching for an
+        app and a raw-command UI. Not for routine use; it bypasses the server's own
+        command handling entirely.
+        """
+        supervisor._require_admin(request)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        duid = str((body or {}).get("duid") or "").strip()
+        method = str((body or {}).get("method") or "").strip()
+        params = (body or {}).get("params")
+        if not duid or not method:
+            return JSONResponse({"error": "duid and method are required"}, status_code=400)
+        if params is None:
+            params = []
+
+        vacuums = supervisor._vacuums_payload()["vacuums"]
+        vacuum = next((v for v in vacuums if str(v.get("duid") or "") == duid), None)
+        if vacuum is None:
+            return JSONResponse({"error": f"Unknown device {duid!r}"}, status_code=404)
+
+        device = {"duid": duid, "localkey": str(vacuum.get("local_key") or "")}
+        client = _RoutineMqttClient(supervisor.context, device, _debug_logger)
+        try:
+            await client.connect()
+            result = await client.send_command(method, params)
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        finally:
+            await client.close()
+        return JSONResponse({"result": result})
 
     @app.get("/admin/api/auth")
     async def admin_auth(request: Request) -> JSONResponse:
