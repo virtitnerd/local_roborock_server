@@ -218,3 +218,77 @@ def test_non_numeric_setting_is_rejected_and_nothing_is_saved(ctx):
     with pytest.raises(timer_rpc.TimerRequestError):
         timer_rpc.handle_timer_request(ctx, DUID, "set_timer", [["9", ["on", ["0 9 * * *", action]]]])
     assert schedule_store.list_jobs(ctx, DUID) == before
+
+
+# -- server_timer: the newer, object-wrapped format some firmware requires instead of set_timer --
+
+
+def test_get_server_timer_lists_cloud_schedules_as_id_status_map_index(ctx):
+    result = timer_rpc.handle_timer_request(ctx, DUID, "get_server_timer", [])
+    # Unlike get_timer, every job is listed, including the date-restricted one-off:
+    # get_server_timer carries no cron, so there is nothing to drop.
+    assert result == [
+        ["3549431", "on", -1],
+        ["3549434", "off", -1],
+        ["3878757", "on", -1],
+    ]
+
+
+def test_set_server_timer_creates_a_job_from_the_data_wrapped_params(ctx):
+    settings = {"repeat": 1, "water_box_mode": 202, "segments": "0", "mop_mode": 300, "fan_power": 102,
+                "clean_mop": 1, "map_index": -1}
+    params = {
+        "data": [["1792275311210", ["15 23 * * 0,1,2,3,4,5,6", ["start_clean", settings]]]],
+        "need_retry": 1,
+    }
+    assert timer_rpc.handle_timer_request(ctx, DUID, "set_server_timer", params) == ["ok"]
+
+    job = _job(ctx, "1792275311210")
+    assert job["cron"] == "15 23 * * 0,1,2,3,4,5,6"
+    assert job["enabled"] is True  # a new entry starts on; set_server_timer carries no status
+    entry = job["param"]["params"][0]
+    assert (entry["fan_power"], entry["water_box_mode"], entry["map_index"]) == (102, 202, -1)
+
+    listed = timer_rpc.handle_timer_request(ctx, DUID, "get_server_timer", [])
+    assert ["1792275311210", "on", -1] in listed
+
+
+def test_editing_a_server_timer_schedule_leaves_its_on_off_state_alone(ctx):
+    timer_rpc.handle_timer_request(ctx, DUID, "upd_server_timer", [["3549431", "off"]])
+
+    action = ["start_clean", {"fan_power": 108}]
+    params = {"data": [["3549431", ["30 9 * * 1,3,5", action]]]}
+    timer_rpc.handle_timer_request(ctx, DUID, "set_server_timer", params)
+
+    job = _job(ctx, 3549431)
+    assert job["cron"] == "30 9 * * 1,3,5"
+    assert job["enabled"] is False  # still off: the edit itself never said otherwise
+    assert job["param"]["params"][0]["fan_power"] == 108
+
+
+def test_upd_server_timer_toggles_and_del_server_timer_removes_a_schedule(ctx):
+    assert timer_rpc.handle_timer_request(ctx, DUID, "upd_server_timer", [["3549431", "off"]]) == ["ok"]
+    assert _job(ctx, 3549431)["enabled"] is False
+
+    assert timer_rpc.handle_timer_request(ctx, DUID, "del_server_timer", ["3549431"]) == ["ok"]
+    assert all(j["id"] != 3549431 for j in schedule_store.list_jobs(ctx, DUID))
+
+
+def test_set_server_timer_rejects_an_unparseable_cron(ctx):
+    params = {"data": [["1", ["not a cron", ["start_clean", {}]]]]}
+    with pytest.raises(timer_rpc.TimerRequestError):
+        timer_rpc.handle_timer_request(ctx, DUID, "set_server_timer", params)
+
+
+def test_set_server_timer_rejects_params_without_data(ctx):
+    with pytest.raises(timer_rpc.TimerRequestError):
+        timer_rpc.handle_timer_request(ctx, DUID, "set_server_timer", {"need_retry": 1})
+
+
+def test_interceptor_answers_set_server_timer_with_an_encrypted_rpc_response(ctx):
+    params = {"data": [["1792275311210", ["15 23 * * 0,1,2,3,4,5,6", ["start_clean", {}]]]]}
+    reply = timer_rpc.TimerRpcInterceptor(ctx)(DUID, _encode_request("set_server_timer", params))
+    assert reply is not None
+    response = _decode_reply(reply)
+    assert response.data == ["ok"]
+    assert _job(ctx, "1792275311210")["cron"] == "15 23 * * 0,1,2,3,4,5,6"
