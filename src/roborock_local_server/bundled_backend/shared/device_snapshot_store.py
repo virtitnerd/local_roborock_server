@@ -20,10 +20,19 @@ import struct
 import threading
 import time
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any
 
-from roborock_local_server.log_retention import iter_log_lines
+try:
+    from roborock_local_server.log_retention import iter_log_lines
+except ImportError:  # this branch predates log retention: one plain file, no rotated backups
+
+    def iter_log_lines(path: Path) -> Iterator[str]:
+        try:
+            with path.open(encoding="utf-8", errors="replace") as handle:
+                yield from handle
+        except OSError:
+            return
 
 from .data_helpers import utcnow_iso
 
