@@ -1,9 +1,14 @@
 import asyncio
 
 import pytest
+from fastapi.testclient import TestClient
 
+import roborock_local_server.standalone_admin as admin_module
+from conftest import write_release_config
 from roborock_local_server import ota_dry_run
+from roborock_local_server.config import load_config, resolve_paths
 from roborock_local_server.ota_dry_run import OtaDryRun
+from roborock_local_server.server import ReleaseSupervisor
 from test_ota_package_dry_run import MD5, PACKAGE, URL, FakeCloud, _no_network  # noqa: F401
 
 PACKAGE_INFO = {"url": URL, "md5": MD5, "data": PACKAGE, "filename": f"pearl-s_1526_fullos.{MD5}.signed.pkg", "headers": {}}
@@ -90,6 +95,63 @@ def test_a_robot_that_stays_in_wait_install_is_reported_as_not_installing() -> N
     assert result["stuck_in_wait_install"] is True
     assert result["final_state"] == "wait_install"
     assert result["saw_offline"] is False
+
+
+def _client(tmp_path, monkeypatch):
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    client = TestClient(supervisor.app)
+    client.post("/admin/api/login", json={"password": "correct horse battery staple"})
+    monkeypatch.setattr(supervisor, "_vacuums_payload", lambda: {"vacuums": [{"duid": "robot", "local_key": "k"}]})
+    monkeypatch.setattr(supervisor, "cloud_manager", FakeCloud(current="02.15.26"))
+    robot = Robot(["idle", "downloading", "installing", "idle"])
+
+    class FakeClient:
+        def __init__(self, *args):
+            pass
+
+        async def connect(self):
+            pass
+
+        async def send_command(self, method, params):
+            return await robot.send_command(method, params)
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(admin_module, "_RoutineMqttClient", FakeClient)
+    return client, robot
+
+
+BODY = {"duid": "robot", "mode": "package", "version": "02.15.26", "install": True}
+
+
+def test_the_endpoint_refuses_an_install_without_the_exact_confirmation(tmp_path, monkeypatch) -> None:
+    client, robot = _client(tmp_path, monkeypatch)
+    for body in (BODY, {**BODY, "confirm": "yes"}, {**BODY, "confirm": "INSTALL 02.15.26 ON other"},
+                 {**BODY, "confirm": "INSTALL 02.15.26 ON robot", "mode": "random"}):
+        response = client.post("/admin/api/debug/ota_dry_run", json=body)
+        assert response.status_code == 400 and response.json()["ran"] is False
+    assert all(method != "miIO.ota" for method, _ in robot.asked)
+
+
+def test_the_endpoint_runs_an_install_with_the_confirmation(tmp_path, monkeypatch) -> None:
+    client, robot = _client(tmp_path, monkeypatch)
+    response = client.post("/admin/api/debug/ota_dry_run", json={**BODY, "confirm": "INSTALL 02.15.26 ON robot"})
+
+    assert response.status_code == 200
+    assert response.json()["install"] is True and _ota_call(robot)["install"] == "1"
+
+
+def test_an_install_of_a_version_the_robot_is_not_running_is_refused(tmp_path, monkeypatch) -> None:
+    client, robot = _client(tmp_path, monkeypatch)
+    response = client.post(
+        "/admin/api/debug/ota_dry_run", json={**BODY, "version": "02.99.99", "confirm": "INSTALL 02.99.99 ON robot"},
+    )
+
+    assert response.status_code == 409 and "current version" in response.json()["reason"]
+    assert all(method != "miIO.ota" for method, _ in robot.asked)
 
 
 def test_a_robot_asleep_on_its_dock_counts_as_docked() -> None:

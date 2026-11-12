@@ -11,6 +11,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from .bundled_backend.shared.routine_runner import _RoutineMqttClient
+from .ota_dry_run import PackageRefused, resolve_package
 from .security import verify_password
 from .web_theme import HEAD_ASSETS, NAV_HTML, SCRIPT_ASSETS, register_theme_routes
 
@@ -756,6 +757,58 @@ def register_standalone_admin_routes(
         except ValueError as exc:
             return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
         return JSONResponse({"success": True, "rows": rows})
+
+    @app.post("/admin/api/debug/ota_dry_run")
+    async def admin_debug_ota_dry_run(request: Request) -> JSONResponse:
+        """Asks a docked, idle robot to download (never install) a random file from this server.
+
+        Shows whether the robot's local OTA command takes the documented parameters, and how it
+        reacts. The file is random bytes and install is off, so nothing can be flashed.
+        """
+        supervisor._require_admin(request)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        duid = str((body or {}).get("duid") or "").strip()
+        vacuum = next((v for v in supervisor._vacuums_payload()["vacuums"] if str(v.get("duid") or "") == duid), None)
+        if not duid or vacuum is None:
+            return JSONResponse({"error": f"Unknown device {duid!r}"}, status_code=404)
+
+        install = (body or {}).get("install") is True
+        version = str((body or {}).get("version") or "")
+        if install:
+            needed = f"INSTALL {version} ON {duid}"
+            if (body or {}).get("mode") != "package" or (body or {}).get("confirm") != needed:
+                return JSONResponse(
+                    {"ran": False, "reason": f"An install needs mode=package and confirm set to exactly {needed!r}"},
+                    status_code=400,
+                )
+        package = None
+        if (body or {}).get("mode") == "package":
+            try:
+                package = await resolve_package(
+                    supervisor.cloud_manager, duid, str((body or {}).get("version") or ""),
+                    serve=(body or {}).get("via_server", True) is not False,
+                )
+            except PackageRefused as exc:
+                return JSONResponse({"ran": False, "reason": str(exc)}, status_code=409)
+            except Exception as exc:  # noqa: BLE001
+                return JSONResponse({"error": f"Could not resolve the package: {exc}"}, status_code=502)
+
+        device = {"duid": duid, "localkey": str(vacuum.get("local_key") or "")}
+        client = _RoutineMqttClient(supervisor.context, device, _debug_logger)
+        try:
+            await client.connect()
+            variant = (body or {}).get("variant")
+            result = await supervisor.ota_dry_run.run(
+                client, supervisor.context.api_url(), package, variant if isinstance(variant, dict) else None, install,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return JSONResponse({"error": str(exc)}, status_code=502)
+        finally:
+            await client.close()
+        return JSONResponse(result, status_code=200 if result.get("ran") else 409)
 
     @app.get("/admin/api/auth")
     async def admin_auth(request: Request) -> JSONResponse:
