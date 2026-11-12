@@ -1,8 +1,15 @@
 import asyncio
 import hashlib
+from pathlib import Path
 
+from fastapi.testclient import TestClient
+
+import roborock_local_server.standalone_admin as admin_module
+from conftest import write_release_config
 from roborock_local_server import ota_dry_run
+from roborock_local_server.config import load_config, resolve_paths
 from roborock_local_server.ota_dry_run import OtaDryRun
+from roborock_local_server.server import ReleaseSupervisor
 
 DOCKED = [{"state": 8, "battery": 100, "in_cleaning": 0, "error_code": 0}]
 
@@ -117,6 +124,53 @@ def test_range_and_head_requests_are_answered(monkeypatch) -> None:
     assert dict((k.lower(), v) for k, v in robot.part.raw_headers)[b"content-range"].startswith(b"bytes 0-9/")
     assert robot.head.status_code == 200 and robot.head.body == b""
     assert robot.head.headers["content-length"] == str(ota_dry_run.FILE_BYTES)
+
+
+def _client(tmp_path: Path):
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    return TestClient(supervisor.app), supervisor
+
+
+def test_the_admin_endpoint_needs_login_and_a_known_robot(tmp_path) -> None:
+    client, supervisor = _client(tmp_path)
+    assert client.post("/admin/api/debug/ota_dry_run", json={"duid": "x"}).status_code == 401
+    client.post("/admin/api/login", json={"password": "correct horse battery staple"})
+    assert client.post("/admin/api/debug/ota_dry_run", json={"duid": "nope"}).status_code == 404
+
+
+def test_the_admin_endpoint_runs_the_dry_run(tmp_path, monkeypatch) -> None:
+    _fast(monkeypatch)
+    client, supervisor = _client(tmp_path)
+    client.post("/admin/api/login", json={"password": "correct horse battery staple"})
+    monkeypatch.setattr(supervisor, "_vacuums_payload", lambda: {"vacuums": [{"duid": "robot", "local_key": "k"}]})
+    robot = FakeRobot(supervisor.ota_dry_run, ["idle", "downloading", "failed", "failed", "failed"])
+
+    class FakeClient:
+        def __init__(self, *args):
+            pass
+
+        async def connect(self):
+            pass
+
+        async def send_command(self, method, params):
+            return await robot.send_command(method, params)
+
+        async def close(self):
+            pass
+
+    monkeypatch.setattr(admin_module, "_RoutineMqttClient", FakeClient)
+    response = client.post("/admin/api/debug/ota_dry_run", json={"duid": "robot"})
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["ran"] is True and body["file_fetched"] is True and body["final_state"] == "failed"
+
+
+def test_an_unknown_test_file_path_is_a_404_not_the_generic_ok(tmp_path) -> None:
+    client, _ = _client(tmp_path)
+    assert client.get("/ota_test/aaaaaaaaaaaaaaaaaaaaaaaa.bin").status_code == 404
 
 
 def test_a_robot_still_showing_a_failed_attempt_can_start_a_new_one(monkeypatch) -> None:
