@@ -611,7 +611,7 @@ class _RoutineMqttClient:
             return await asyncio.wait_for(future, timeout=_COMMAND_TIMEOUT_SECONDS)
         except TimeoutError as exc:
             raise RoutineTimeoutError(
-                f"Command {command.value} timed out after {_COMMAND_TIMEOUT_SECONDS}s"
+                f"Command {getattr(command, 'value', command)} timed out after {_COMMAND_TIMEOUT_SECONDS}s"
             ) from exc
         finally:
             self._pending.pop(request.request_id, None)

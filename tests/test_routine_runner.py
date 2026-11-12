@@ -1026,3 +1026,22 @@ def test_query_gives_up_after_the_second_silence(tmp_path: Path, monkeypatch) ->
         asyncio.run(runner.query("dev", RoborockCommand.APP_GET_DRYER_SETTING))
 
     assert AlwaysSilent.attempts == 2
+
+
+def test_a_timed_out_raw_command_names_its_method(monkeypatch) -> None:
+    """A command given as a plain string (the debug sender) used to fail with "'str' object has no attribute 'value'"."""
+    client = object.__new__(routine_runner_module._RoutineMqttClient)
+    client._pending = {}
+    client._security_data = None
+    client._encoder = lambda message: b"x"
+    client._publish_topic = "topic"
+
+    class Session:
+        async def publish(self, topic, payload):
+            return None
+
+    client._session = Session()
+    monkeypatch.setattr(routine_runner_module, "_COMMAND_TIMEOUT_SECONDS", 0.05)
+
+    with pytest.raises(routine_runner_module.RoutineTimeoutError, match="Command get_status timed out"):
+        asyncio.run(client.send_command("get_status", []))
