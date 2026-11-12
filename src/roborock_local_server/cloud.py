@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, is_dataclass
 from datetime import datetime, timezone
 import json
+import re
 from pathlib import Path
 import secrets
 import threading
@@ -23,6 +24,7 @@ from .backend import (
     _flatten_device_scenes,
     _hawk_get_result,
     _load_existing_inventory_for_merge,
+    _request_cloud_api_data,
     _merge_existing_inventory_mutations,
     _normalize_dict_list,
     _normalize_dict_map,
@@ -185,6 +187,40 @@ class CloudImportManager:
         async with aiohttp.ClientSession(timeout=timeout) as session:
             api = self._cloud_client(session, meta, email)
             return await _hawk_get_result(api, user_data, path, params=params)
+
+    async def web_get(self, path: str, params: dict[str, Any] | None = None) -> Any:
+        """A read of Roborock's account web API with the stored login token; returns the reply's `data`."""
+        _, meta, user_data, email = self._stored_cloud_login()
+        timeout = aiohttp.ClientTimeout(total=30)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            api = self._cloud_client(session, meta, email)
+            return await _request_cloud_api_data(api, user_data, path, method="get", params=params)
+
+    # Only these reads can be explored, so the tool cannot reach anything that changes state.
+    EXPLORE_PREFIXES = ("/ota/", "/home/checkversion", "/api/v1/beta/")
+    # The firmware address route the app's plugin calls for a robot and version: one exact shape.
+    EXPLORE_PATTERNS = (re.compile(r"/user/devices/[A-Za-z0-9]+/fw"),)
+    EXPLORE_LIMIT = 40
+
+    async def explore(self, requests: list[Any]) -> list[dict[str, Any]]:
+        """GETs each requested path (IoT API by default, `"api": "web"` for the account API); one failure does not stop the rest."""
+        rows: list[dict[str, Any]] = []
+        for item in requests[: self.EXPLORE_LIMIT]:
+            item = item if isinstance(item, dict) else {}
+            path = str(item.get("path") or "")
+            params = item.get("params") if isinstance(item.get("params"), dict) else None
+            kind = "web" if item.get("api") == "web" else "iot"
+            row: dict[str, Any] = {"path": path, "params": params, "api": kind}
+            allowed = path.startswith(self.EXPLORE_PREFIXES) or any(p.fullmatch(path) for p in self.EXPLORE_PATTERNS)
+            if not allowed or ".." in path or "?" in path:
+                row["error"] = "path not allowed"
+            else:
+                try:
+                    row["result"] = await (self.web_get if kind == "web" else self.iot_get)(path, params)
+                except Exception as exc:  # noqa: BLE001
+                    row["error"] = str(exc)
+            rows.append(row)
+        return rows
 
     async def firmware_update_info(self, duid: str, *, lang: str = "en") -> Any:
         """What the cloud says about a robot's firmware update, read with the stored login."""

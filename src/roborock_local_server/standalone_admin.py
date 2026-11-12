@@ -740,6 +740,23 @@ def register_standalone_admin_routes(
             await client.close()
         return JSONResponse({"result": result})
 
+    @app.post("/admin/api/debug/cloud_get")
+    async def admin_debug_cloud_get(request: Request) -> JSONResponse:
+        """Reads candidate cloud paths with the stored login: GET only, under /ota/, /home/checkversion and /api/v1/beta/."""
+        supervisor._require_admin(request)
+        try:
+            body = await request.json()
+        except json.JSONDecodeError:
+            body = {}
+        requests = (body or {}).get("requests")
+        if not isinstance(requests, list) or not requests:
+            return JSONResponse({"error": "requests must be a non-empty list"}, status_code=400)
+        try:
+            rows = await supervisor.cloud_manager.explore(requests)
+        except ValueError as exc:
+            return JSONResponse({"success": False, "error": str(exc)}, status_code=400)
+        return JSONResponse({"success": True, "rows": rows})
+
     @app.get("/admin/api/auth")
     async def admin_auth(request: Request) -> JSONResponse:
         supervisor._require_admin(request)
