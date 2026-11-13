@@ -159,6 +159,8 @@ If your model already has certificate notes on the tested-vacuums page, follow t
 
 If you don't want to install `uv`/Python on the host just to run `configure`, you can set `ROBOROCK_SERVER_*` environment variables instead. On first boot, if `/data/config.toml` doesn't already exist, the container generates one from these variables and starts normally. Once a `config.toml` exists it is kept, and the variables keep it in step in a small way: at each start, every `ROBOROCK_SERVER_*` variable that is set is compared with the matching key and, only when they differ, that one key is changed. Everything else in the file (other keys, comments, sections you added by hand, the admin login) stays as written, and a variable that is not set changes nothing. The settings covered are the simple single values: the server name and ports, listener, broker, `data_dir`, TLS mode, base domain, email, ACME server and certificate paths, `ROBOROCK_SERVER_OTA_ENABLE_INSTALL`, `ROBOROCK_SERVER_MATTER_KEY_PROXY` and the camera relay (`ROBOROCK_SERVER_TURN_MODE`, `_HOST`, `_PORT`, `_USERNAME`, `_PASSWORD`, `_REALM`, `_TTL`). Each change is printed to the container log, secrets masked, and an invalid value is reported and skipped instead of stopping the server. A `config.toml` mounted at `/app/config.toml` is read-only, so the variables cannot be applied to it; the log says what they would have changed.
 
+To see whole robot replies in the log while troubleshooting, set `ROBOROCK_SERVER_LOG_PAYLOAD_CHARS`. Log lines keep the first 280 characters of each MQTT payload by default; a larger number keeps more and `0` keeps all of it. Full payloads can include device identifiers, so turn it back off when you are done.
+
 Required variables:
 
 - `ROBOROCK_SERVER_STACK_FQDN`
