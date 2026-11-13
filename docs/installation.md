@@ -161,6 +161,8 @@ If you don't want to install `uv`/Python on the host just to run `configure`, yo
 
 To see whole robot replies in the log while troubleshooting, set `ROBOROCK_SERVER_LOG_PAYLOAD_CHARS`. Log lines keep the first 280 characters of each MQTT payload by default; a larger number keeps more and `0` keeps all of it. Full payloads can include device identifiers, so turn it back off when you are done.
 
+To use the admin API and dashboard without logging in from your own machines, set `ROBOROCK_SERVER_ADMIN_TRUSTED_NETWORKS` to the addresses allowed, such as `10.0.50.5` or `10.0.50.0/27`, comma or space separated. It is off by default. A trusted address has **full admin access with no login**: it can read the device list (which includes device keys), send any command to a robot through the debug API, and change settings, exactly as a logged-in admin can. Only the connecting address counts (forwarded headers are ignored), so the setting is ignored when `listener_mode` is `external_tls`, and `/0` ranges are rejected. Anything else on the network that is in the range, and anything that can spoof an address inside it, gets the same access, so use a single address or a small range you control.
+
 Required variables:
 
 - `ROBOROCK_SERVER_STACK_FQDN`
