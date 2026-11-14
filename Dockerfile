@@ -1,10 +1,11 @@
-FROM python:3.11-slim
+FROM python:3.13-slim-trixie
 
 LABEL org.opencontainers.image.source="https://github.com/python-roborock/local_roborock_server" \
   org.opencontainers.image.description="Private Roborock HTTPS and MQTT stack for local LAN use" \
   org.opencontainers.image.licenses="MIT"
 
 RUN apt-get update \
+  && apt-get upgrade -y \
   && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -14,7 +15,7 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 RUN mkdir -p /opt/acme.sh \
-  && curl -fsSL https://github.com/acmesh-official/acme.sh/archive/refs/heads/master.tar.gz \
+  && curl -fsSL https://github.com/acmesh-official/acme.sh/archive/refs/tags/3.1.6.tar.gz \
   | tar -xz --strip-components=1 -C /opt/acme.sh \
   && chmod +x /opt/acme.sh/acme.sh \
   && ln -sf /opt/acme.sh/acme.sh /usr/local/bin/acme.sh
