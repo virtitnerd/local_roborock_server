@@ -79,3 +79,7 @@ ttl = 86400
 # The package comes from Roborock's CDN, is checked against its checksum, and is served to the robot from here.
 [ota]
 enable_install = false
+
+# Forwards a robot's Matter key request to Roborock's cloud (see docs/matter.md).
+[matter]
+key_proxy = false

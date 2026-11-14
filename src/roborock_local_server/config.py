@@ -113,6 +113,13 @@ class OtaConfig:
 
 
 @dataclass(frozen=True)
+class MatterConfig:
+    """Matter setup for robots: the key a robot downloads comes from Roborock's cloud."""
+
+    key_proxy: bool = False
+
+
+@dataclass(frozen=True)
 class AppConfig:
     network: NetworkConfig
     broker: BrokerConfig
@@ -122,6 +129,7 @@ class AppConfig:
     turn: TurnConfig = TurnConfig()
     logging: LoggingConfig = LoggingConfig()
     ota: OtaConfig = OtaConfig()
+    matter: MatterConfig = MatterConfig()
 
 
 @dataclass(frozen=True)
@@ -440,6 +448,17 @@ def _load_ota(parsed: dict[str, object]) -> OtaConfig:
     return OtaConfig(enable_install=enabled)
 
 
+def _load_matter(parsed: dict[str, object]) -> MatterConfig:
+    matter = _get_section(parsed, "matter")
+    enabled = _as_bool(matter.get("key_proxy"), False)
+    override = os.environ.get("ROBOROCK_SERVER_MATTER_KEY_PROXY", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        enabled = True
+    elif override in {"0", "false", "no", "off"}:
+        enabled = False
+    return MatterConfig(key_proxy=enabled)
+
+
 def _load_admin(parsed: dict[str, object]) -> AdminConfig:
     admin = _get_section(parsed, "admin")
     admin_config = AdminConfig(
@@ -470,6 +489,7 @@ def load_config(path: str | Path) -> AppConfig:
     return AppConfig(
         logging=_load_logging(parsed),
         ota=_load_ota(parsed),
+        matter=_load_matter(parsed),
         network=network_config,
         broker=broker_config,
         storage=storage_config,
