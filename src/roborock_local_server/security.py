@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import base64
 import hashlib
+import ipaddress
 import hmac
 import json
 import secrets
@@ -95,3 +96,34 @@ class AdminSessionManager:
             return None
         return SessionClaims(issued_at=issued_at, expires_at=expires_at)
 
+
+TRUSTED_NETWORKS_ENV = "ROBOROCK_SERVER_ADMIN_TRUSTED_NETWORKS"
+
+def parse_trusted_networks(raw: str) -> tuple[list[ipaddress.IPv4Network | ipaddress.IPv6Network], list[str]]:
+    """Comma or space separated CIDR ranges (a bare address means one host). Returns (networks, rejected entries)."""
+    networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
+    rejected: list[str] = []
+    for entry in raw.replace(",", " ").split():
+        try:
+            network = ipaddress.ip_network(entry, strict=False)
+        except ValueError:
+            rejected.append(entry)
+            continue
+        if network.prefixlen == 0:
+            # 0.0.0.0/0 or ::/0 would trust the whole Internet.
+            rejected.append(entry)
+            continue
+        networks.append(network)
+    return networks, rejected
+
+
+def address_in_networks(
+    address: str | None, networks: list[ipaddress.IPv4Network | ipaddress.IPv6Network]
+) -> bool:
+    if not address or not networks:
+        return False
+    try:
+        ip = ipaddress.ip_address(address)
+    except ValueError:
+        return False
+    return any(ip in network for network in networks if network.version == ip.version)

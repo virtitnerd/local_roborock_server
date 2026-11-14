@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
@@ -67,9 +68,31 @@ def setup_file_logger(
     return logger
 
 
-def payload_preview(payload: bytes, max_chars: int = 280) -> str:
+_DEFAULT_PAYLOAD_PREVIEW_CHARS = 280
+
+
+def _payload_preview_limit() -> int | None:
+    """Characters of a payload kept in log lines; ROBOROCK_SERVER_LOG_PAYLOAD_CHARS=0 keeps all of it."""
+    raw = os.environ.get("ROBOROCK_SERVER_LOG_PAYLOAD_CHARS", "").strip()
+    if not raw:
+        return _DEFAULT_PAYLOAD_PREVIEW_CHARS
+    try:
+        value = int(raw)
+    except ValueError:
+        return _DEFAULT_PAYLOAD_PREVIEW_CHARS
+    return None if value <= 0 else value
+
+
+def payload_preview(payload: bytes, max_chars: int | None = None) -> str:
     if not payload:
         return ""
+    if max_chars is None:
+        max_chars = _payload_preview_limit()
+    if max_chars is None:
+        try:
+            return payload.decode("utf-8")
+        except UnicodeDecodeError:
+            return payload.hex()
     try:
         text = payload.decode("utf-8")
         if len(text) > max_chars:

@@ -69,7 +69,13 @@ from https_server.routes.auth.service import (
     with_current_server_urls,
 )
 from .bundled_backend.shared.zone_ranges_store import ZoneRangesStore
-from .security import AdminSessionManager, verify_password
+from .security import (
+    TRUSTED_NETWORKS_ENV,
+    AdminSessionManager,
+    address_in_networks,
+    parse_trusted_networks,
+    verify_password,
+)
 
 
 ALL_HTTP_METHODS = ("GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS")
@@ -379,6 +385,7 @@ class ReleaseSupervisor:
             secret=config.admin.session_secret,
             ttl_seconds=config.admin.session_ttl_seconds,
         )
+        self.admin_trusted_networks = self._load_admin_trusted_networks()
         self.cloud_manager = CloudImportManager(
             inventory_path=self.paths.inventory_path,
             snapshot_path=self.paths.cloud_snapshot_path,
@@ -548,7 +555,33 @@ class ReleaseSupervisor:
             "mqtt_clientid": mqtt_clientid,
         }
 
+    def _load_admin_trusted_networks(self) -> list[Any]:
+        raw = os.environ.get(TRUSTED_NETWORKS_ENV, "").strip()
+        if not raw:
+            return []
+        networks, rejected = parse_trusted_networks(raw)
+        for entry in rejected:
+            self.root_logger.warning("%s: ignoring %r (not a usable network range)", TRUSTED_NETWORKS_ENV, entry)
+        if networks and self.config.network.listener_mode == "external_tls":
+            # Behind a TLS-terminating proxy the connecting address is the proxy, not the caller.
+            self.root_logger.warning("%s is ignored when listener_mode is external_tls", TRUSTED_NETWORKS_ENV)
+            return []
+        if networks:
+            self.root_logger.warning(
+                "%s is set: callers on %s have full access to the admin API without a login",
+                TRUSTED_NETWORKS_ENV,
+                ", ".join(str(n) for n in networks),
+            )
+        return networks
+
+    def _trusted_network(self, request: Request) -> bool:
+        """True when the connecting address (never a forwarded header) is in a trusted network."""
+        client = request.client
+        return address_in_networks(client.host if client else None, self.admin_trusted_networks)
+
     def _authenticated(self, request: Request) -> bool:
+        if self._trusted_network(request):
+            return True
         return self.session_manager.verify(request.cookies.get(self.session_manager.cookie_name)) is not None
 
     def _require_admin(self, request: Request) -> None:
@@ -1499,9 +1532,11 @@ class ReleaseSupervisor:
             # /nc just handed the vacuum its localKey; persist now instead of relying on an
             # onboarding client still polling the session (it may have timed out or exited).
             self.persist_active_onboarding_device()
-        if route_name != "catchall":
-            # Truly unmatched requests (favicon probes, health checks, random scans) aren't
-            # meaningful onboarding/protocol activity - keep them out of the Activity feed.
+        if route_name != "catchall" or request.method.upper() not in {"GET", "HEAD", "OPTIONS"} or explicit_did:
+            # Plain GET/HEAD probes nobody handles (favicons, health checks, scans) aren't
+            # meaningful activity and stay out of the feed. An unmatched request that writes
+            # (POST/PUT/...) or names a device is exactly what to look at when a robot starts
+            # sending something this server has no handler for, so those are kept.
             append_jsonl(self.context.http_jsonl, entry)
         if key_cache is not None and key_capture_did:
             try:
