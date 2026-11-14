@@ -2,9 +2,13 @@ import asyncio
 import hashlib
 
 import pytest
+from fastapi.testclient import TestClient
 
+from conftest import write_release_config
 from roborock_local_server import ota_dry_run
+from roborock_local_server.config import load_config, resolve_paths
 from roborock_local_server.ota_dry_run import OtaDryRun, PackageRefused, resolve_package
+from roborock_local_server.server import ReleaseSupervisor
 
 PACKAGE = b"not really a firmware, but it has bytes" * 100
 MD5 = hashlib.md5(PACKAGE).hexdigest()  # noqa: S324
@@ -130,6 +134,26 @@ def test_a_direct_package_gives_the_robot_the_cdn_address_and_serves_nothing() -
     sent = next(params for method, params in robot.asked if method == "miIO.ota")
     assert (sent["app_url"], sent["install"], sent["proc"]) == (URL, "0", "dnld")
     assert result["file_fetched"] is False
+
+
+def _client(tmp_path):
+    config_file = write_release_config(tmp_path)
+    config = load_config(config_file)
+    supervisor = ReleaseSupervisor(config=config, paths=resolve_paths(config_file, config))
+    client = TestClient(supervisor.app)
+    client.post("/admin/api/login", json={"password": "correct horse battery staple"})
+    return client, supervisor
+
+
+def test_the_endpoint_refuses_a_version_the_robot_is_not_running(tmp_path, monkeypatch) -> None:
+    client, supervisor = _client(tmp_path)
+    monkeypatch.setattr(supervisor, "_vacuums_payload", lambda: {"vacuums": [{"duid": "robot", "local_key": "k"}]})
+    monkeypatch.setattr(supervisor, "cloud_manager", FakeCloud(current="02.15.26"))
+
+    response = client.post("/admin/api/debug/ota_dry_run", json={"duid": "robot", "mode": "package", "version": "02.35.52"})
+
+    assert response.status_code == 409
+    assert response.json()["ran"] is False and "current version" in response.json()["reason"]
 
 
 def test_the_package_is_served_under_its_real_file_name_with_the_cdn_headers() -> None:
