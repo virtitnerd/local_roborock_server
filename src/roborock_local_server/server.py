@@ -816,6 +816,7 @@ class ReleaseSupervisor:
             "/api/v1/appplugin",
             "/api/v1/plugins",
             "/api/v4/agreement/latest",
+            "/api/v4/app/agreement/latest",
         }
 
     @classmethod
