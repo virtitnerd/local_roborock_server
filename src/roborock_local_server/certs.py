@@ -7,12 +7,13 @@ from datetime import datetime, timedelta, timezone
 import logging
 import os
 from pathlib import Path
+import re
 import subprocess
 from typing import Iterable
 
 from cryptography import x509
 
-from .config import AppConfig, AppPaths
+from .config import ACME_SERVERS_REQUIRING_EAB, ACME_SERVER_DISPLAY_NAMES, AppConfig, AppPaths
 
 
 LOG = logging.getLogger("roborock_local_server.certs")
@@ -78,9 +79,10 @@ class CertificateManager:
         hmac_key = self.config.tls.acme_eab_hmac_key or self._read_optional_secret_file(self.paths.acme_eab_hmac_key_file)
         if bool(kid) != bool(hmac_key):
             raise RuntimeError("ACME EAB credentials are incomplete; both KID and HMAC key are required")
-        if self.config.tls.acme_server == "actalis" and not kid:
+        if self.config.tls.acme_server in ACME_SERVERS_REQUIRING_EAB and not kid:
+            display_name = ACME_SERVER_DISPLAY_NAMES.get(self.config.tls.acme_server, self.config.tls.acme_server)
             raise RuntimeError(
-                "Actalis ACME requires EAB credentials. "
+                f"{display_name} ACME requires EAB credentials. "
                 f"Checked inline config plus {self.paths.acme_eab_kid_file} and {self.paths.acme_eab_hmac_key_file}."
             )
         return kid, hmac_key
@@ -129,6 +131,33 @@ class CertificateManager:
         expected_domains = {domain.strip().lower() for domain in issue_domains if domain.strip()}
         return actual_domains == expected_domains
 
+    _ACME_FAILURE_HINTS: tuple[tuple[re.Pattern[str], str], ...] = (
+        (
+            re.compile(r"retryafter=\d+ value is too large"),
+            (
+                "the CA reported an unusually long Retry-After while your order was still "
+                "'processing', and acme.sh gave up rather than wait that long (it caps out at "
+                "600 seconds). This is CA-side congestion, not a problem with this config - "
+                "retry later, or switch tls.acme_server to a different CA."
+            ),
+        ),
+        (
+            re.compile(r"curl.*error code: [67]\b"),
+            (
+                "acme.sh could not connect to the CA or DNS provider's API (curl connection/DNS "
+                "resolve failure). Usually transient - check the container's outbound DNS/network "
+                "at boot, or just retry."
+            ),
+        ),
+    )
+
+    @classmethod
+    def _acme_failure_hint(cls, stdout: str) -> str | None:
+        for pattern, hint in cls._ACME_FAILURE_HINTS:
+            if pattern.search(stdout):
+                return hint
+        return None
+
     def _run_acme(self, args: Iterable[str]) -> None:
         self.paths.acme_dir.mkdir(parents=True, exist_ok=True)
         if not ACME_SH_PATH.exists():
@@ -160,7 +189,11 @@ class CertificateManager:
             LOG.info("ACME command skipped because certificate renewal is not due: %s", display_command)
             return
         if result.returncode != 0:
-            raise RuntimeError(f"ACME command failed ({result.returncode}): {display_command}")
+            hint = self._acme_failure_hint(result.stdout)
+            message = f"ACME command failed ({result.returncode}): {display_command}"
+            if hint:
+                message = f"{message}\n{hint}"
+            raise RuntimeError(message)
 
     def _provision_or_renew(self) -> None:
         self.paths.certs_dir.mkdir(parents=True, exist_ok=True)
@@ -199,6 +232,13 @@ class CertificateManager:
             raise RuntimeError("ACME completed without writing certificate files")
 
     def _certificate_domains(self) -> tuple[str, list[str]]:
+        # Actalis specifically has been reported not to support wildcard SAN
+        # certs via DNS-01 on the account tier this project's EAB flow uses,
+        # so it gets a single-domain (stack_fqdn only) cert instead. That's
+        # an Actalis-specific finding, not a general EAB-CA limitation - Let's
+        # Encrypt and ZeroSSL both support wildcards without issue, and we
+        # don't have confirmation either way for SSL.com, so new CAs default
+        # to the normal wildcard shape unless a report says otherwise.
         if self.config.tls.acme_server == "actalis":
             stack_fqdn = self.config.network.stack_fqdn
             return stack_fqdn, [stack_fqdn]
