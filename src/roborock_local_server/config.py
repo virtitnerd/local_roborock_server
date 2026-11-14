@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 import ipaddress
 from pathlib import Path
 import re
@@ -105,6 +106,13 @@ class TurnConfig:
 
 
 @dataclass(frozen=True)
+class OtaConfig:
+    """Firmware installs from the official app's Update button; off until the owner opts in."""
+
+    enable_install: bool = False
+
+
+@dataclass(frozen=True)
 class AppConfig:
     network: NetworkConfig
     broker: BrokerConfig
@@ -113,6 +121,7 @@ class AppConfig:
     admin: AdminConfig
     turn: TurnConfig = TurnConfig()
     logging: LoggingConfig = LoggingConfig()
+    ota: OtaConfig = OtaConfig()
 
 
 @dataclass(frozen=True)
@@ -383,14 +392,6 @@ def _load_network_broker_storage_tls(
     return network_config, broker_config, storage_config, tls_config
 
 
-def _load_logging(parsed: dict[str, object]) -> LoggingConfig:
-    logging = _get_section(parsed, "logging")
-    return LoggingConfig(
-        max_size_mb=logging.get("max_size_mb", LoggingConfig.max_size_mb),
-        backup_count=logging.get("backup_count", LoggingConfig.backup_count),
-    )
-
-
 def _load_turn(parsed: dict[str, object]) -> TurnConfig:
     turn = _get_section(parsed, "turn")
     mode = str(turn.get("mode", "external" if _as_bool(turn.get("enabled"), False) else "disabled")).strip().lower()
@@ -417,6 +418,26 @@ def _load_turn(parsed: dict[str, object]) -> TurnConfig:
             if any(character in getattr(turn_config, name) for character in "\r\n:="):
                 raise ValueError(f"turn.{name} cannot contain newlines, colons, or equals signs in provided mode")
     return turn_config
+
+
+def _load_logging(parsed: dict[str, object]) -> LoggingConfig:
+    logging = _get_section(parsed, "logging")
+    return LoggingConfig(
+        max_size_mb=logging.get("max_size_mb", LoggingConfig.max_size_mb),
+        backup_count=logging.get("backup_count", LoggingConfig.backup_count),
+    )
+
+
+def _load_ota(parsed: dict[str, object]) -> OtaConfig:
+    ota = _get_section(parsed, "ota")
+    enabled = _as_bool(ota.get("enable_install"), False)
+    # The env var wins when set, so it also works on a config.toml that already exists.
+    override = os.environ.get("ROBOROCK_SERVER_OTA_ENABLE_INSTALL", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        enabled = True
+    elif override in {"0", "false", "no", "off"}:
+        enabled = False
+    return OtaConfig(enable_install=enabled)
 
 
 def _load_admin(parsed: dict[str, object]) -> AdminConfig:
@@ -447,8 +468,9 @@ def load_config(path: str | Path) -> AppConfig:
     turn_config = _load_turn(parsed)
     admin_config = _load_admin(parsed)
     return AppConfig(
-        network=network_config,
         logging=_load_logging(parsed),
+        ota=_load_ota(parsed),
+        network=network_config,
         broker=broker_config,
         storage=storage_config,
         tls=tls_config,
@@ -471,8 +493,8 @@ def diagnose_config(path: str | Path) -> str:
         return "invalid"
     try:
         _load_network_broker_storage_tls(parsed)
-        _load_logging(parsed)
         _load_turn(parsed)
+        _load_logging(parsed)
     except ValueError:
         return "invalid"
     try:

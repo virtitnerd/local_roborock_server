@@ -244,6 +244,13 @@ def test_room_mapping_ignores_empty_and_malformed_answers(tmp_path: Path) -> Non
     assert store.get(DUID) is None
 
 
+def test_the_firmware_report_is_remembered(tmp_path: Path) -> None:
+    store = DeviceSnapshotStore(tmp_path)
+    store.record_firmware_version("robot1", '{"mqttOtaData":{"mqttOtaFirmwareVersion":{"version":"02.35.52"}}}')
+    store.record_firmware_version("robot1", "not json")
+    assert store.get("robot1")["firmware_version"] == "02.35.52"
+
+
 def test_get_prop_get_status_counts_as_a_status_answer() -> None:
     assert is_status_answer({"request_method": "get_status"})
     assert is_status_answer({"request_method": "get_prop", "request_params": ["get_status"]})
