@@ -1612,6 +1612,7 @@ def _logged_in_client(supervisor: ReleaseSupervisor) -> TestClient:
 
 
 def test_admin_activity_requires_auth(tmp_path: Path) -> None:
+def test_admin_plugin_catalog_endpoints_require_auth_and_report_the_snapshot(tmp_path: Path) -> None:
     config_file = write_release_config(tmp_path)
     config = load_config(config_file)
     paths = resolve_paths(config_file, config)
@@ -1775,3 +1776,28 @@ def test_last_known_route_names_each_room_of_the_robots_room_table(tmp_path: Pat
         {"segment": 19, "iot_id": "4", "tag": 14, "name": "Kitchen"},
         {"segment": 18, "iot_id": "999", "tag": 1, "name": None},
     ]
+    assert client.get("/admin/api/cloud/plugins").status_code == 401
+    assert client.post("/admin/api/cloud/refresh-plugins", json={}).status_code == 401
+
+    assert client.post("/admin/api/login", json={"password": "correct horse battery staple"}).status_code == 200
+    assert client.get("/admin/api/cloud/plugins").json() == {"success": True}
+
+    paths.cloud_snapshot_path.write_text(
+        json.dumps(
+            {
+                "web_api_cache": {
+                    "plugin_catalogs": {
+                        "appplugin": {"json": {"type": 2}, "data": [{"productid": 110, "version": 7006, "url": "https://files.roborock.com/a.zip"}]},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    stored = client.get("/admin/api/cloud/plugins").json()
+    assert stored["appplugin"]["plugins"] == [{"productid": 110, "version": 7006, "url": "https://files.roborock.com/a.zip"}]
+
+    refused = client.post("/admin/api/cloud/refresh-plugins", json={})
+    assert refused.status_code == 400
+    assert refused.json()["step"] == "plugin_refresh_failed"
+    assert "No cloud login" in refused.json()["error"]
