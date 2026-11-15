@@ -117,6 +117,13 @@ class OtaConfig:
 
 
 @dataclass(frozen=True)
+class MatterConfig:
+    """Matter setup for robots: the key a robot downloads comes from Roborock's cloud."""
+
+    key_proxy: bool = False
+
+
+@dataclass(frozen=True)
 class AppConfig:
     network: NetworkConfig
     broker: BrokerConfig
@@ -126,6 +133,7 @@ class AppConfig:
     turn: TurnConfig = TurnConfig()
     logging: LoggingConfig = LoggingConfig()
     ota: OtaConfig = OtaConfig()
+    matter: MatterConfig = MatterConfig()
 
 
 @dataclass(frozen=True)
@@ -472,6 +480,21 @@ def _load_ota(parsed: dict[str, object]) -> OtaConfig:
     )
 
 
+def _matter_key_proxy_enabled(from_file: bool) -> bool:
+    """The env var wins when set, so the proxy can also be switched on for a config.toml that already exists."""
+    override = os.environ.get("ROBOROCK_SERVER_MATTER_KEY_PROXY", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    return from_file
+
+
+def _load_matter(parsed: dict[str, object]) -> MatterConfig:
+    matter = _get_section(parsed, "matter")
+    return MatterConfig(key_proxy=_matter_key_proxy_enabled(_as_bool(matter.get("key_proxy"), False)))
+
+
 def load_config(path: str | Path) -> AppConfig:
     config_path = Path(path).resolve()
     parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
@@ -487,6 +510,7 @@ def load_config(path: str | Path) -> AppConfig:
         admin=admin_config,
         turn=turn_config,
         ota=_load_ota(parsed),
+        matter=_load_matter(parsed),
     )
 
 

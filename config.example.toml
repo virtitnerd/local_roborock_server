@@ -84,3 +84,7 @@ enable_install = false
 allow_downgrade = false
 # Keeps the package files from before and after an install (about 300 MB each) for a quick reinstall.
 keep_previous_package = false
+
+# Forwards a robot's Matter key request to Roborock's cloud (see docs/matter.md).
+[matter]
+key_proxy = false
