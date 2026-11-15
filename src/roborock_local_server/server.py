@@ -24,6 +24,7 @@ import uvicorn
 from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from .certs import CertificateManager
+from .mqtt_websocket import register_mqtt_websocket_route
 from .bundled_backend.shared.constants import DEFAULT_PRODUCT_SCHEMA
 from .bundled_backend.shared.data_helpers import utcnow_iso
 from .product_registry import resolve_product_metadata
@@ -1865,8 +1866,14 @@ class ReleaseSupervisor:
                 supervisor=self,
                 project_support=PROJECT_SUPPORT,
             )
+        register_mqtt_websocket_route(app, target=self._mqtt_websocket_target, logger=self.loggers["mqtt"])
         self._register_protocol_routes(app)
         return app
+
+    def _mqtt_websocket_target(self) -> tuple[str, int, bool]:
+        bind = self.config.network.bind_host
+        host = "127.0.0.1" if bind in ("", "0.0.0.0", "::") else bind
+        return host, self.config.network.mqtt_tls_port, self._uses_local_tls()
 
     def _uses_local_tls(self) -> bool:
         return self.config.network.listener_mode == "local_tls"
