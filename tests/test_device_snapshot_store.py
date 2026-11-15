@@ -250,3 +250,8 @@ def test_get_prop_get_status_counts_as_a_status_answer() -> None:
     assert not is_status_answer({"request_method": "get_prop", "request_params": ["get_consumable"]})
     assert not is_status_answer({"request_method": "get_prop"})
     assert not is_status_answer({"request_method": "get_room_mapping"})
+def test_the_firmware_report_is_remembered(tmp_path: Path) -> None:
+    store = DeviceSnapshotStore(tmp_path)
+    store.record_firmware_version("robot1", '{"mqttOtaData":{"mqttOtaFirmwareVersion":{"version":"02.35.52"}}}')
+    store.record_firmware_version("robot1", "not json")
+    assert store.get("robot1")["firmware_version"] == "02.35.52"

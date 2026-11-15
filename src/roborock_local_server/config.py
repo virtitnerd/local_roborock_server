@@ -6,6 +6,7 @@ from dataclasses import dataclass
 import ipaddress
 from pathlib import Path
 import re
+import os
 import tomllib
 from urllib.parse import urlsplit
 
@@ -105,6 +106,17 @@ class TurnConfig:
 
 
 @dataclass(frozen=True)
+class OtaConfig:
+    """Firmware installs from the official app's Update button; off until the owner opts in."""
+
+    enable_install: bool = False
+    # Installing a catalog version other than the cloud's offer, older ones included; proven on one model only.
+    allow_downgrade: bool = False
+    # Keeps the package files of the versions before and after an install in the cache, for a quick reinstall.
+    keep_previous_package: bool = False
+
+
+@dataclass(frozen=True)
 class AppConfig:
     network: NetworkConfig
     broker: BrokerConfig
@@ -113,6 +125,7 @@ class AppConfig:
     admin: AdminConfig
     turn: TurnConfig = TurnConfig()
     logging: LoggingConfig = LoggingConfig()
+    ota: OtaConfig = OtaConfig()
 
 
 @dataclass(frozen=True)
@@ -440,6 +453,25 @@ def _load_admin(parsed: dict[str, object]) -> AdminConfig:
     return admin_config
 
 
+def _ota_install_enabled(from_file: bool) -> bool:
+    """The env var wins when set, so installs can also be switched on for a config.toml that already exists."""
+    override = os.environ.get("ROBOROCK_SERVER_OTA_ENABLE_INSTALL", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    return from_file
+
+
+def _load_ota(parsed: dict[str, object]) -> OtaConfig:
+    ota = _get_section(parsed, "ota")
+    return OtaConfig(
+        enable_install=_ota_install_enabled(_as_bool(ota.get("enable_install"), False)),
+        allow_downgrade=_as_bool(ota.get("allow_downgrade"), False),
+        keep_previous_package=_as_bool(ota.get("keep_previous_package"), False),
+    )
+
+
 def load_config(path: str | Path) -> AppConfig:
     config_path = Path(path).resolve()
     parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
@@ -454,6 +486,7 @@ def load_config(path: str | Path) -> AppConfig:
         tls=tls_config,
         admin=admin_config,
         turn=turn_config,
+        ota=_load_ota(parsed),
     )
 
 
