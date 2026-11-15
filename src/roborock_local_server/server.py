@@ -232,6 +232,9 @@ class ManagedFastApiServer:
             "access_log": False,
             # X-Forwarded-For is applied by the app's own middleware, scoped to network.trusted_proxies.
             "proxy_headers": False,
+            # MQTT has its own keepalive; uvicorn's WebSocket pings dropped Paho's /mqtt connection after 20 s.
+            "ws_ping_interval": None,
+            "ws_ping_timeout": None,
         }
         if self._tls_enabled:
             if self._cert_file is None or self._key_file is None:

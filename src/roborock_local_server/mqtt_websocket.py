@@ -65,11 +65,18 @@ def register_mqtt_websocket_route(
             while chunk := await reader.read(_CHUNK):
                 await websocket.send_bytes(chunk)
 
-        tasks = [asyncio.create_task(ws_to_mqtt()), asyncio.create_task(mqtt_to_ws())]
+        tasks = {
+            asyncio.create_task(ws_to_mqtt()): "the app",
+            asyncio.create_task(mqtt_to_ws()): "the MQTT listener",
+        }
+        reason = "unknown"
         try:
-            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            first = next(iter(done))
+            error = first.exception() if not first.cancelled() else None
+            reason = f"{tasks[first]} closed it" + (f" ({type(error).__name__}: {error})" if error else "")
         except WebSocketDisconnect:
-            pass
+            reason = "the app disconnected"
         finally:
             for task in tasks:
                 task.cancel()
@@ -81,4 +88,4 @@ def register_mqtt_websocket_route(
                 await writer.wait_closed()
             with contextlib.suppress(RuntimeError, OSError):
                 await websocket.close()
-            logger.info("MQTT WebSocket closed")
+            logger.info("MQTT WebSocket closed: %s", reason)
