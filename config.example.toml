@@ -1,4 +1,8 @@
 [network]
+# Experimental: also serve MQTT as a WebSocket at /mqtt, for apps that can reach the server only
+# through an HTTPS-only tunnel such as a Cloudflare Tunnel. The broker still checks the MQTT login.
+# See docs/reverse_proxy.md.
+# mqtt_websocket = false
 # The one hostname the stack will serve. Keep this as the hostname only.
 stack_fqdn = "api-roborock.example.com"
 bind_host = "0.0.0.0"
@@ -74,6 +78,10 @@ username = ""
 password = ""
 realm = "api-roborock.example.com"
 ttl = 86400
+# Experimental: also let the app reach the relay as TURN over WebSocket at /turn, so
+# remote camera works through an HTTPS-only tunnel. Needs mode = "provided" and
+# protocol auth on; it publishes no new port. See docs/camera.md.
+websocket = false
 
 # Lets the official app's Update button install firmware (docked, 80%+ battery, idle robots only).
 # The package comes from Roborock's CDN, is checked against its checksum, and is served to the robot from here.

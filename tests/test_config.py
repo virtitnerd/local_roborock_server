@@ -708,3 +708,11 @@ def test_diagnose_config_invalid_when_network_is_broken_even_if_admin_is_fine(tm
     config_file.write_text((broken_network + _VALID_ADMIN).strip(), encoding="utf-8")
 
     assert diagnose_config(config_file) == "invalid"
+def test_turn_websocket_is_off_by_default_and_parsed_when_set(tmp_path):
+    path = write_release_config(tmp_path)
+    base = path.read_text()
+    block = '\n[turn]\nmode="provided"\nhost="relay.example"\npassword="secret"\n'
+    path.write_text(base + block)
+    assert load_config(path).turn.websocket is False
+    path.write_text(base + block + "websocket = true\n")
+    assert load_config(path).turn.websocket is True
