@@ -17,6 +17,18 @@ RELAY_PORT_MIN = 49160
 RELAY_PORT_MAX = 49179
 
 
+def local_address_for(host: str) -> str:
+    """This machine's address on the interface that routes to [host].
+
+    coturn allocates a client's relay on the address the client connected to, so the WebSocket relay
+    must not use loopback: a robot cannot reach a relay bound to 127.0.0.1.
+    """
+    peer = socket.getaddrinfo(host, None, socket.AF_INET, socket.SOCK_DGRAM)[0][4][0]
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+        probe.connect((peer, 9))
+        return probe.getsockname()[0]
+
+
 class EmbeddedTurnRelay:
     def __init__(self, config: TurnConfig, state_dir: Path) -> None:
         self.config = config
@@ -51,7 +63,8 @@ class EmbeddedTurnRelay:
             f"realm={self.config.realm}",
             f"user={self.config.username}:{self.config.password}",
             "fingerprint",
-            "no-tcp",
+            # The experimental WebSocket relay reaches coturn over TCP; nothing publishes that port.
+            *([] if self.config.websocket else ["no-tcp"]),
             "no-tls",
             "no-dtls",
             "no-multicast-peers",

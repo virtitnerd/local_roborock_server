@@ -104,6 +104,8 @@ class TurnConfig:
     password: str = ""
     realm: str = ""
     ttl: int = 86400
+    # Experimental: also serve the relay to the app as TURN over WebSocket at /turn (see docs/camera.md).
+    websocket: bool = False
 
 
 @dataclass(frozen=True)
@@ -370,6 +372,7 @@ def load_config(path: str | Path) -> AppConfig:
             password=str(turn.get("password", "")).strip(),
             realm=str(turn.get("realm", "") or turn.get("host", "")).strip(),
             ttl=_as_int(turn.get("ttl"), "turn.ttl", 86400),
+            websocket=_as_bool(turn.get("websocket"), False),
         ),
     )
 

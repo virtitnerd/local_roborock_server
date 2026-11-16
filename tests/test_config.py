@@ -557,3 +557,13 @@ def test_load_config_rejects_invalid_trusted_proxy(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="network.trusted_proxies entry 'traefik'"):
         load_config(config_file)
+
+
+def test_turn_websocket_is_off_by_default_and_parsed_when_set(tmp_path):
+    path = write_release_config(tmp_path)
+    base = path.read_text()
+    block = '\n[turn]\nmode="provided"\nhost="relay.example"\npassword="secret"\n'
+    path.write_text(base + block)
+    assert load_config(path).turn.websocket is False
+    path.write_text(base + block + "websocket = true\n")
+    assert load_config(path).turn.websocket is True

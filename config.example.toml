@@ -78,3 +78,7 @@ username = ""
 password = ""
 realm = "api-roborock.example.com"
 ttl = 86400
+# Experimental: also let the app reach the relay as TURN over WebSocket at /turn, so
+# remote camera works through an HTTPS-only tunnel. Needs mode = "provided" and
+# protocol auth on; it publishes no new port. See docs/camera.md.
+websocket = false
