@@ -473,6 +473,8 @@ SETTINGS: tuple[_Setting, ...] = (
     _Setting("CERT_FILE", "tls", "cert_file", _text("CERT_FILE")),
     _Setting("KEY_FILE", "tls", "key_file", _text("KEY_FILE")),
     _Setting("OTA_ENABLE_INSTALL", "ota", "enable_install", _bool_of("OTA_ENABLE_INSTALL")),
+    _Setting("OTA_ALLOW_DOWNGRADE", "ota", "allow_downgrade", _bool_of("OTA_ALLOW_DOWNGRADE")),
+    _Setting("OTA_KEEP_PREVIOUS_PACKAGE", "ota", "keep_previous_package", _bool_of("OTA_KEEP_PREVIOUS_PACKAGE")),
     _Setting("MATTER_KEY_PROXY", "matter", "key_proxy", _bool_of("MATTER_KEY_PROXY")),
     _Setting("TURN_MODE", "turn", "mode", _choice("TURN_MODE", {"disabled", "provided", "external"})),
     _Setting("TURN_HOST", "turn", "host", _text("TURN_HOST")),
