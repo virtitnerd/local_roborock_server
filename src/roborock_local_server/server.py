@@ -17,7 +17,7 @@ import threading
 from typing import Any
 from urllib.parse import parse_qs
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, Response
 from python_multipart.exceptions import MultipartParseError
 import uvicorn
@@ -25,6 +25,8 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from .certs import CertificateManager
 from .mqtt_websocket import register_mqtt_websocket_route
+from .turn_relay import local_address_for
+from .turn_websocket import register_turn_websocket_route
 from .bundled_backend.shared.constants import DEFAULT_PRODUCT_SCHEMA
 from .bundled_backend.shared.data_helpers import utcnow_iso
 from .product_registry import resolve_product_metadata
@@ -1871,8 +1873,32 @@ class ReleaseSupervisor:
             )
         if self.config.network.mqtt_websocket:
             register_mqtt_websocket_route(app, target=self._mqtt_websocket_target, logger=self.loggers["mqtt"])
+        if self.config.turn.mode == "provided" and self.config.turn.websocket:
+            register_turn_websocket_route(
+                app,
+                target=self._turn_websocket_target,
+                authorize=self._authorize_turn_websocket,
+                logger=self.loggers["mqtt"],
+            )
+
         self._register_protocol_routes(app)
         return app
+
+    def _turn_websocket_target(self) -> tuple[str, int]:
+        return local_address_for(self.config.turn.host), self.config.turn.port
+
+    def _authorize_turn_websocket(self, websocket: WebSocket) -> tuple[bool, str]:
+        # Fail closed: an open TURN relay can reach hosts on the LAN.
+        if not self.protocol_auth_enabled():
+            return False, "protocol auth is disabled, so /turn is refused"
+        return self.protocol_auth.verify_hawk(
+            path="/turn",
+            query_params={},
+            body_params={},
+            headers=websocket.headers,
+            raw_body=None,
+        )
+
 
     def _mqtt_websocket_target(self) -> tuple[str, int, bool]:
         bind = self.config.network.bind_host

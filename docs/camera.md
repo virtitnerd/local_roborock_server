@@ -111,6 +111,29 @@ failure. Coturn logs go to container stdout; configure log retention through you
 container platform. The resolved advertised IPv4 address and unexpected relay
 exit code are logged. TURN passwords are redacted from persisted HTTP responses.
 
+## Remote camera through a Cloudflare Tunnel (experimental)
+
+This is experimental. It is off by default, has only been tested on one robot model and Android, and may change or be removed. Cloudflare's own terms apply to anything you send through your tunnel. Video on the free plan may be throttled or terminated by Cloudflare at any time, and you are responsible for that.
+
+What it is: a phone away from home normally cannot reach the relay, because a Cloudflare Tunnel only carries HTTP(S) and WebSocket traffic. With this option the app opens a WebSocket to `/turn` on your normal HTTPS hostname, and the server passes those bytes to its own coturn over TCP on this machine. The robot is unchanged and keeps using UDP on your LAN. Only the phone's leg uses TCP.
+
+Setup:
+
+1. Use the embedded relay and turn the option on:
+
+   ```toml
+   [turn]
+   mode = "provided"
+   websocket = true
+   ```
+
+2. Keep the tunnel route you already have for the HTTPS port. There is no new route to add and no TCP port to publish.
+3. The robot still needs UDP 3478 and the relay port range (UDP 49160-49179) on the LAN, as in [TURN modes and port publication](#turn-modes-and-port-publication).
+
+How it is protected: every `/turn` connection must carry the same Hawk `Authorization` header as other app requests, and the server refuses all of them when `protocol_auth_enabled` is off. You can add a Cloudflare Access service token on top for a second check.
+
+Warning: publishing the hostname through the tunnel also publishes `/admin` and every other route. Block them with a Cloudflare WAF rule, or put the whole hostname behind Cloudflare Access, and allow only what the app needs.
+
 ## Remote-view authentication and activation
 
 Use the existing remote-view PIN from the Roborock app. Convert drawing patterns
