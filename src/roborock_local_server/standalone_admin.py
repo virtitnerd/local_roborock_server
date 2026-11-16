@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse, JSONResponse
 from . import firmware_versions
 from .bundled_backend.shared.routine_runner import _RoutineMqttClient
 from .firmware_catalog import SOURCE_PROBE
-from .ota_dry_run import PackageRefused, package_address, package_md5, resolve_package
+from .ota_dry_run import PackageRefused, package_address, package_headers, package_md5, resolve_package
 from .security import verify_password
 from .web_theme import HEAD_ASSETS, NAV_HTML, SCRIPT_ASSETS, register_theme_routes
 
@@ -1072,7 +1072,12 @@ def register_standalone_admin_routes(
                 url = await package_address(supervisor.cloud_manager, duid, version)
             except Exception as exc:  # noqa: BLE001
                 return JSONResponse({"success": False, "stoppedAt": version, "error": str(exc), "learned": learned}, status_code=502)
-            if url and installer.catalog.add(model, version, source=SOURCE_PROBE, url=url, md5=package_md5(url)):
+            if not url:
+                await asyncio.sleep(0.2)
+                continue
+            known = installer.catalog.entry(model, version) or {}
+            released, size = ("", None) if known.get("released") and known.get("size") else await package_headers(url)
+            if installer.catalog.add(model, version, source=SOURCE_PROBE, url=url, md5=package_md5(url), size=size, released=released):
                 learned.append(version)
             await asyncio.sleep(0.2)
         return JSONResponse({"success": True, "model": model, "checked": len(versions), "learned": learned})
