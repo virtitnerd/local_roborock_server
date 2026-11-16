@@ -395,6 +395,14 @@ def test_the_websocket_options_can_be_switched_on_from_variables(tmp_path: Path)
     assert parsed["turn"]["websocket"] is True
 
 
+def test_the_firmware_downgrade_options_can_be_switched_on_from_variables(tmp_path: Path) -> None:
+    env = {"ROBOROCK_SERVER_OTA_ALLOW_DOWNGRADE": "true", "ROBOROCK_SERVER_OTA_KEEP_PREVIOUS_PACKAGE": "true"}
+    _, _, parsed = _patched(tmp_path, env)
+
+    assert parsed["ota"]["allow_downgrade"] is True
+    assert parsed["ota"]["keep_previous_package"] is True
+
+
 def test_a_missing_section_is_added_and_a_secret_is_not_printed(tmp_path: Path) -> None:
     text = _CONFIG.split("[turn]")[0]
     _, changes, parsed = _patched(tmp_path, {"ROBOROCK_SERVER_TURN_MODE": "provided", "ROBOROCK_SERVER_TURN_PASSWORD": "s3cret"}, text)
