@@ -27,6 +27,8 @@ class NetworkConfig:
     mqtt_client_id: str
     trusted_proxies: tuple[str, ...] = ("127.0.0.1", "::1")
     timezone: str = ""
+    # Experimental: serve the MQTT listener as a WebSocket at /mqtt for apps behind an HTTPS-only tunnel.
+    mqtt_websocket: bool = False
 
 
 @dataclass(frozen=True)
@@ -313,6 +315,7 @@ def load_config(path: str | Path) -> AppConfig:
                 network.get("timezone", "") or parsed.get("timezone", ""),
                 "network.timezone",
             ),
+            mqtt_websocket=_as_bool(network.get("mqtt_websocket"), False),
         ),
         broker=BrokerConfig(
             mode=broker_mode,

@@ -1,4 +1,8 @@
 [network]
+# Experimental: also serve MQTT as a WebSocket at /mqtt, for apps that can reach the server only
+# through an HTTPS-only tunnel such as a Cloudflare Tunnel. The broker still checks the MQTT login.
+# See docs/reverse_proxy.md.
+# mqtt_websocket = false
 # The one hostname the stack will serve. Keep this as the hostname only.
 stack_fqdn = "api-roborock.example.com"
 bind_host = "0.0.0.0"

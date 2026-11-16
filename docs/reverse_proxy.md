@@ -138,6 +138,27 @@ trusted_proxies = ["10.42.0.0/16", "10.1.1.10"]
 
 > Only list addresses that are actually proxies. Any client that connects from a trusted address during onboarding can claim the vacuum being onboarded. Keep onboarding windows short, and turn off new connections when you are not adding a device.
 
+## MQTT over WebSocket for HTTPS-only tunnels (experimental)
+
+A Cloudflare Tunnel public hostname carries only HTTP(S) and WebSocket, so an app away from home cannot reach the MQTT TLS port. With this option the server also serves MQTT as a WebSocket at `/mqtt` on its normal HTTPS hostname, and passes the bytes to its own MQTT TLS listener, so the broker, its login and the logs behave as for a direct connection. It publishes no new port and is off by default:
+
+```toml
+[network]
+mqtt_websocket = true
+```
+
+The robots are unchanged and keep using the MQTT TLS port on your LAN. Only an app written to use the WebSocket (LocalRock has an experimental client) benefits; the official Roborock app has no WebSocket mode.
+
+Things to know:
+
+- Cloudflare's bot rules can challenge a request with no `User-Agent`, so clients should send one.
+- The server does not send WebSocket pings on `/mqtt`, because MQTT has its own keepalive and some clients drop the connection on a ping.
+- The server sees the tunnel's address as the client, not the phone's.
+- Publishing the hostname also publishes `/admin` and every other route. Block them with a Cloudflare WAF rule, or put the hostname behind Cloudflare Access, and allow only what the app needs.
+- Users are responsible for Cloudflare's own terms for the traffic they send through the tunnel.
+
+For the camera, see [Remote camera through a Cloudflare Tunnel](camera.md#remote-camera-through-a-cloudflare-tunnel-experimental).
+
 ## What Is Not Supported
 
 Path-prefix hosting is not supported. The Roborock protocol and the admin API expect the stack at the hostname root, for example `/region`, `/api/...`, and `/admin`.
