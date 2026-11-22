@@ -16,8 +16,8 @@ from roborock_local_server.bundled_backend.mqtt_broker_server.topic_bridge impor
 )
 from shared import schedule_store, timer_rpc
 
-DUID = "2e2txkqKqxVifcIdyOT1lY"
-LOCALKEY = "AoYY9mpxTOIUZtg4"
+DUID = "duid-test-1"
+LOCALKEY = "testkey000000000"
 
 
 def _cloud_job(job_id, cron, *, enabled=True, **extra):

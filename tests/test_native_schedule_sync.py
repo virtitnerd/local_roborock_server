@@ -344,12 +344,12 @@ class S6TimerLayoutTests(NativeCoordinatorTests):
 
         context = SimpleNamespace(
             http_jsonl=self.path.parent / "http.jsonl",
-            runtime_credentials=SimpleNamespace(resolve_device=lambda **kw: {"duid": "robot", "localkey": "AoYY9mpxTOIUZtg4"}),
+            runtime_credentials=SimpleNamespace(resolve_device=lambda **kw: {"duid": "robot", "localkey": "testkey000000000"}),
         )
         coordinator = sync.NativeScheduleSync(context)
         body = json.dumps({"id": 1, "method": "upd_server_timer", "params": [[S6_ID, "on"]]})
         payload = json.dumps({"t": 1, "dps": {"101": body}}).encode()
-        frame = create_mqtt_encoder("AoYY9mpxTOIUZtg4")(RoborockMessage(protocol=RoborockMessageProtocol.RPC_REQUEST, payload=payload))
+        frame = create_mqtt_encoder("testkey000000000")(RoborockMessage(protocol=RoborockMessageProtocol.RPC_REQUEST, payload=payload))
         coordinator.observe_request("robot", frame)
         self.assertIn("native-1", coordinator._enable_intent["robot"])
 
