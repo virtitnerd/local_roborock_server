@@ -19,7 +19,7 @@ import threading
 from typing import Any
 from urllib.parse import parse_qs
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from fastapi.responses import JSONResponse, Response
 from python_multipart.exceptions import MultipartParseError
 import uvicorn
@@ -27,6 +27,9 @@ from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
 
 from .activity_log import activity_raw_enabled, read_recent_activity
 from .certs import CertificateManager
+from .mqtt_websocket import register_mqtt_websocket_route
+from .turn_relay import local_address_for
+from .turn_websocket import register_turn_websocket_route
 from .bundled_backend.shared.constants import DEFAULT_PRODUCT_SCHEMA
 from .bundled_backend.shared.data_helpers import utcnow_iso
 from .product_registry import resolve_product_metadata
@@ -245,6 +248,9 @@ class ManagedFastApiServer:
             "access_log": False,
             # X-Forwarded-For is applied by the app's own middleware, scoped to network.trusted_proxies.
             "proxy_headers": False,
+            # MQTT has its own keepalive; uvicorn's WebSocket pings dropped Paho's /mqtt connection after 20 s.
+            "ws_ping_interval": None,
+            "ws_ping_timeout": None,
         }
         if self._tls_enabled:
             if self._cert_file is None or self._key_file is None:
@@ -2227,8 +2233,39 @@ class ReleaseSupervisor:
                 supervisor=self,
                 project_support=PROJECT_SUPPORT,
             )
+        if self.config.network.mqtt_websocket:
+            register_mqtt_websocket_route(app, target=self._mqtt_websocket_target, logger=self.loggers["mqtt"])
+        if self.config.turn.mode == "provided" and self.config.turn.websocket:
+            register_turn_websocket_route(
+                app,
+                target=self._turn_websocket_target,
+                authorize=self._authorize_turn_websocket,
+                logger=self.loggers["mqtt"],
+            )
+
         self._register_protocol_routes(app)
         return app
+
+    def _turn_websocket_target(self) -> tuple[str, int]:
+        return local_address_for(self.config.turn.host), self.config.turn.port
+
+    def _authorize_turn_websocket(self, websocket: WebSocket) -> tuple[bool, str]:
+        # Fail closed: an open TURN relay can reach hosts on the LAN.
+        if not self.protocol_auth_enabled():
+            return False, "protocol auth is disabled, so /turn is refused"
+        return self.protocol_auth.verify_hawk(
+            path="/turn",
+            query_params={},
+            body_params={},
+            headers=websocket.headers,
+            raw_body=None,
+        )
+
+
+    def _mqtt_websocket_target(self) -> tuple[str, int, bool]:
+        bind = self.config.network.bind_host
+        host = "127.0.0.1" if bind in ("", "0.0.0.0", "::") else bind
+        return host, self.config.network.mqtt_tls_port, self._uses_local_tls()
 
     def _uses_local_tls(self) -> bool:
         return self.config.network.listener_mode == "local_tls"

@@ -28,6 +28,8 @@ class NetworkConfig:
     mqtt_client_id: str
     trusted_proxies: tuple[str, ...] = ("127.0.0.1", "::1")
     timezone: str = ""
+    # Experimental: serve the MQTT listener as a WebSocket at /mqtt for apps behind an HTTPS-only tunnel.
+    mqtt_websocket: bool = False
 
 
 @dataclass(frozen=True)
@@ -103,6 +105,8 @@ class TurnConfig:
     password: str = ""
     realm: str = ""
     ttl: int = 86400
+    # Experimental: also serve the relay to the app as TURN over WebSocket at /turn (see docs/camera.md).
+    websocket: bool = False
 
 
 @dataclass(frozen=True)
@@ -355,6 +359,7 @@ def _load_network_broker_storage_tls(
             network.get("timezone", "") or parsed.get("timezone", ""),
             "network.timezone",
         ),
+        mqtt_websocket=_as_bool(network.get("mqtt_websocket"), False),
     )
     broker_config = BrokerConfig(
         mode=broker_mode,
@@ -443,6 +448,7 @@ def _load_turn(parsed: dict[str, object]) -> TurnConfig:
         password=str(turn.get("password", "")).strip(),
         realm=str(turn.get("realm", "") or turn.get("host", "")).strip(),
         ttl=_as_int(turn.get("ttl"), "turn.ttl", 86400),
+        websocket=_as_bool(turn.get("websocket"), False),
     )
     if turn_config.mode not in {"disabled", "provided", "external"}:
         raise ValueError("turn.mode must be 'disabled', 'provided', or 'external'")

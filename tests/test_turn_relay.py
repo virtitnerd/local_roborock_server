@@ -45,3 +45,45 @@ def test_stop_kills_relay_that_ignores_termination(tmp_path):
     relay.stop()
     assert process.terminated and process.killed
     assert relay.process is None
+
+
+@pytest.mark.parametrize(("websocket", "tcp_allowed"), [(False, False), (True, True)])
+def test_coturn_listens_on_tcp_only_for_the_websocket_relay(tmp_path, monkeypatch, websocket, tcp_allowed):
+    monkeypatch.setattr(turn_relay.socket, "getaddrinfo", lambda *args: [(None, None, None, None, ("192.0.2.1", 3478))])
+
+    class Process:
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(turn_relay.subprocess, "Popen", lambda *args, **kwargs: Process())
+    config = TurnConfig(
+        mode="provided", host="turn.example.com", username="user", password="secret", realm="example.com",
+        websocket=websocket,
+    )
+    EmbeddedTurnRelay(config, tmp_path).start()
+    lines = (tmp_path / "turnserver.conf").read_text(encoding="utf-8").splitlines()
+    assert ("no-tcp" in lines) is (not tcp_allowed)
+
+
+def test_the_websocket_relay_connects_to_a_real_interface_not_loopback(monkeypatch):
+    monkeypatch.setattr(turn_relay.socket, "getaddrinfo", lambda *args: [(None, None, None, None, ("192.0.2.9", 0))])
+
+    class Probe:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def connect(self, address):
+            assert address[0] == "192.0.2.9"
+
+        def getsockname(self):
+            return ("10.0.30.15", 54321)
+
+    monkeypatch.setattr(turn_relay.socket, "socket", lambda *args: Probe())
+    assert turn_relay.local_address_for("turn.example.com") == "10.0.30.15"
+
+
+def test_local_address_for_loopback_stays_loopback():
+    assert turn_relay.local_address_for("127.0.0.1") == "127.0.0.1"
