@@ -31,6 +31,7 @@ from .bundled_backend.shared.runtime_state import ONBOARDING_STEP_LABELS, REQUIR
 from .cloud import CloudImportManager
 from .config import AppConfig, AppPaths, load_config, resolve_paths
 from .log_retention import configure_jsonl_logging
+from . import matter_proxy
 from .turn_relay import EmbeddedTurnRelay
 from .standalone_admin import register_standalone_admin_routes
 from .backend import (
@@ -1294,6 +1295,24 @@ class ReleaseSupervisor:
                     body_sha256[:16],
                 )
                 return JSONResponse(response_payload, status_code=status_code)
+
+        if self.config.matter.key_proxy and matter_proxy.matches(clean_path, request.method):
+            matter_proxy.redact_log_entry(entry)
+            matter_query = matter_proxy.parse_query(request.url.query)
+            limiter = self.__dict__.setdefault("_matter_limiter", matter_proxy.RateLimiter())
+            client_ip = request.client.host if request.client else ""
+            if not limiter.allow(client_ip):
+                proxied: Response = Response(content=b"", status_code=429)
+            elif not matter_proxy.query_is_acceptable(request.url.query):
+                proxied = Response(content=b"", status_code=400)
+            elif not matter_proxy.known_device(self.runtime_state.vacuum_snapshot(), matter_query, client_ip):
+                proxied = Response(content=b"", status_code=403)
+            else:
+                proxied = await matter_proxy.forward(request, self.config.network.region)
+            entry["route"] = "matter_key_proxy"
+            entry["response_meta"] = {"status_code": proxied.status_code, "bytes": len(proxied.body)}
+            append_jsonl(self.context.http_jsonl, entry)
+            return proxied
 
         try:
             plugin_dispatch = await dispatch_plugin_zip_request(
