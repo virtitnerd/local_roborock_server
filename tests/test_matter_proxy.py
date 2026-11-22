@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 
 import pytest
 from aiohttp import web
@@ -155,10 +156,20 @@ def test_the_raw_query_reaches_the_upstream_unchanged(monkeypatch) -> None:
     assert response.status_code == 200 and seen["raw"] == query
 
 
-def test_an_unusable_header_is_logged_at_debug(caplog) -> None:
-    caplog.set_level("DEBUG", logger="real_stack.api")
-    assert matter_proxy.forwardable_headers({"Authorization": "x" * 5000}) == {}
-    assert "Authorization" in caplog.text
+def test_an_unusable_header_is_logged_at_debug() -> None:
+    messages: list[str] = []
+    handler = logging.Handler(level=logging.DEBUG)
+    handler.emit = lambda record: messages.append(record.getMessage())  # type: ignore[method-assign]
+    logger = matter_proxy.logger
+    previous = logger.level
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
+    try:
+        assert matter_proxy.forwardable_headers({"Authorization": "x" * 5000}) == {}
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
+    assert any("Authorization" in message for message in messages)
 
 
 def test_the_rate_limit_is_per_client() -> None:
@@ -175,6 +186,7 @@ def test_a_request_must_name_or_come_from_a_known_robot() -> None:
     assert matter_proxy.known_device(robots, {}, "10.0.0.7")
     assert not matter_proxy.known_device(robots, {}, "9.9.9.9")
     assert not matter_proxy.known_device([], {}, "10.0.0.7")
+    assert not matter_proxy.known_device(robots, {"device_id": ["d1"]}, "9.9.9.9")
 
 
 def _supervisor(tmp_path, monkeypatch, enabled: bool) -> ReleaseSupervisor:
@@ -228,11 +240,13 @@ def test_when_disabled_nothing_is_forwarded(tmp_path, monkeypatch) -> None:
 
     monkeypatch.setattr(matter_proxy, "forward", fail_forward)
     supervisor.runtime_state.upsert_vacuum("D1", did="d1", name="Robot")
-    response = TestClient(supervisor.app).get(PATH + "?did=d1")
+    response = TestClient(supervisor.app).get(PATH + "?did=d1&signature=QUERYSECRET", headers={"Authorization": "SECRETVALUE"})
 
     assert called == []
     assert response.content != b"KEYBYTES"
     assert "matter_key_proxy" not in supervisor.context.http_jsonl.read_text(encoding="utf-8")
+    log_text = supervisor.context.http_jsonl.read_text(encoding="utf-8")
+    assert PATH in log_text and "QUERYSECRET" not in log_text and "SECRETVALUE" not in log_text
 
 
 def test_the_route_answers_429_after_too_many_requests(tmp_path, monkeypatch) -> None:
@@ -240,3 +254,11 @@ def test_the_route_answers_429_after_too_many_requests(tmp_path, monkeypatch) ->
     client = TestClient(supervisor.app)
     codes = [client.get(PATH + "?did=ghost").status_code for _ in range(12)]
     assert codes[:10] == [403] * 10 and codes[10:] == [429, 429]
+
+
+def test_the_route_records_an_event_without_creating_a_robot_for_a_refused_id(tmp_path, monkeypatch) -> None:
+    supervisor = _supervisor(tmp_path, monkeypatch, True)
+    TestClient(supervisor.app).get(PATH + "?did=ghost&signature=QUERYSECRET")
+    events = [e for e in supervisor.runtime_state.recent_events() if e.get("route") == "matter_key_proxy"]
+    assert len(events) == 1 and events[0]["raw_path"] == PATH and events[0]["did"] is None
+    assert supervisor.runtime_state.vacuum_snapshot() == []

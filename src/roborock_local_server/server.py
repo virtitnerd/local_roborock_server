@@ -374,6 +374,7 @@ class ReleaseSupervisor:
         self.config = config
         self.paths = paths
         self.enable_standalone_admin = bool(enable_standalone_admin)
+        self._matter_limiter = matter_proxy.RateLimiter()
 
         self.root_logger = logging.getLogger("roborock_local_server")
         self.root_logger.setLevel(logging.INFO)
@@ -1310,6 +1311,8 @@ class ReleaseSupervisor:
             "body_sha256": body_sha256,
             "remote": f"{client_host}:{client_port}",
         }
+        if matter_proxy.matches(clean_path, request.method):
+            matter_proxy.redact_log_entry(entry)
         if explicit_did:
             entry["did"] = explicit_did
         if explicit_pid:
@@ -1569,20 +1572,36 @@ class ReleaseSupervisor:
             logger.info("%s %s host=%s route=ota_dry_run_file status=%d", request.method, clean_path, host or "-", dry_run_file.status_code)
             return dry_run_file
         if self.config.matter.key_proxy and matter_proxy.matches(clean_path, request.method):
-            matter_proxy.redact_log_entry(entry)
             matter_query = matter_proxy.parse_query(request.url.query)
-            limiter = self.__dict__.setdefault("_matter_limiter", matter_proxy.RateLimiter())
             client_ip = request.client.host if request.client else ""
-            if not limiter.allow(client_ip):
+            admitted = False
+            if not self._matter_limiter.allow(client_ip):
                 proxied: Response = Response(content=b"", status_code=429)
             elif not matter_proxy.query_is_acceptable(request.url.query):
                 proxied = Response(content=b"", status_code=400)
             elif not matter_proxy.known_device(self.runtime_state.vacuum_snapshot(), matter_query, client_ip):
                 proxied = Response(content=b"", status_code=403)
             else:
+                admitted = True
                 proxied = await matter_proxy.forward(request, self.config.network.region)
             entry["route"] = "matter_key_proxy"
             entry["response_meta"] = {"status_code": proxied.status_code, "bytes": len(proxied.body)}
+            try:
+                # Ids from a refused request are unverified: leaving them out keeps the event from creating a robot record.
+                self.runtime_state.record_http_event(
+                    event_time=str(entry["time"]),
+                    route_name="matter_key_proxy",
+                    clean_path=clean_path,
+                    raw_path=clean_path,
+                    method=request.method,
+                    host=host,
+                    remote=str(entry["remote"]),
+                    did=(explicit_did or None) if admitted else None,
+                    pid=(explicit_pid or None) if admitted else None,
+                    model=(explicit_model or None) if admitted else None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("runtime_state record_http_event failed: %s", exc)
             append_jsonl(self.context.http_jsonl, entry)
             return proxied
 
