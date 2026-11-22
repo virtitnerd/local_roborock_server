@@ -1603,7 +1603,7 @@ def test_stalled_tls_handshake_is_closed_after_timeout(start_tls_proxy) -> None:
 
 class _FakeCredentials:
     def resolve_device(self, *, did: str = "", duid: str = "", model: str = "") -> dict[str, str] | None:
-        return {"duid": "DUID1"} if did == "1103829226788" else None
+        return {"duid": "DUID1"} if did == "did-test-1" else None
 
 
 def _snapshot_proxy(tmp_path):
@@ -1628,10 +1628,10 @@ def _snapshot_proxy(tmp_path):
 
 def test_robot_status_push_updates_the_snapshot_and_remembers_the_connection(tmp_path) -> None:
     proxy, store = _snapshot_proxy(tmp_path)
-    proxy._set_conn_device_topic("7", "rr/d/i/1103829226788/abc")
+    proxy._set_conn_device_topic("7", "rr/d/i/did-test-1/abc")
 
     proxy._observe_snapshot(
-        "7", "c2b", "rr/d/i/1103829226788/abc", 102, {"payload_utf8": '{"t":1,"dps":{"122":5}}'}, b"",
+        "7", "c2b", "rr/d/i/did-test-1/abc", 102, {"payload_utf8": '{"t":1,"dps":{"122":5}}'}, b"",
     )
 
     assert store.get("DUID1")["status"]["battery"] == 5
@@ -1640,12 +1640,12 @@ def test_robot_status_push_updates_the_snapshot_and_remembers_the_connection(tmp
 
 def test_get_status_answer_updates_the_snapshot(tmp_path) -> None:
     proxy, store = _snapshot_proxy(tmp_path)
-    proxy._set_conn_device_topic("7", "rr/d/i/1103829226788/abc")
+    proxy._set_conn_device_topic("7", "rr/d/i/did-test-1/abc")
 
     proxy._observe_snapshot(
         "7",
         "c2b",
-        "rr/d/i/1103829226788/abc",
+        "rr/d/i/did-test-1/abc",
         102,
         {"response_to": {"request_method": "get_status", "error": None, "result": [{"state": 8, "battery": 100}]}},
         b"",
@@ -1662,7 +1662,7 @@ def test_frames_that_are_not_from_the_robot_do_not_mark_it_seen(tmp_path) -> Non
         "9", "c2b", "rr/m/i/user/abcd1234/DUID1", 102, {"payload_utf8": '{"dps":{"122":5}}'}, b"",
     )
     proxy._observe_snapshot(
-        "9", "b2c", "rr/d/o/1103829226788/abc", 102, {"payload_utf8": '{"dps":{"122":5}}'}, b"",
+        "9", "b2c", "rr/d/o/did-test-1/abc", 102, {"payload_utf8": '{"dps":{"122":5}}'}, b"",
     )
 
     assert store.get("DUID1") is None
@@ -1671,20 +1671,20 @@ def test_frames_that_are_not_from_the_robot_do_not_mark_it_seen(tmp_path) -> Non
 
 def test_a_request_with_a_nonce_is_remembered_for_its_map_reply(tmp_path) -> None:
     proxy, store = _snapshot_proxy(tmp_path)
-    payload = '{"dps":{"101":"{\\"security\\":{\\"endpoint\\":\\"w5Mpv215\\",\\"nonce\\":\\"00ff\\"}}"}}'
+    payload = '{"dps":{"101":"{\\"security\\":{\\"endpoint\\":\\"testep01\\",\\"nonce\\":\\"00ff\\"}}"}}'
 
     proxy._observe_snapshot("9", "c2b", "rr/m/i/user/abcd1234/DUID1", 101, {"payload_utf8": payload}, b"")
 
-    assert store._nonces["DUID1"] == {"w5Mpv215": "00ff"}
+    assert store._nonces["DUID1"] == {"testep01": "00ff"}
 
 
-ROBOT_TOPIC = "rr/d/i/1103829226788/abc"
+ROBOT_TOPIC = "rr/d/i/did-test-1/abc"
 PUSH = {"payload_utf8": '{"t":1,"dps":{"122":5}}'}
 
 
 def test_a_publish_from_a_login_not_bound_to_the_robot_topic_is_not_the_robot_speaking(tmp_path) -> None:
     proxy, store = _snapshot_proxy(tmp_path)
-    proxy._set_conn_device_topic("8", "rr/d/i/1103821560705/other")
+    proxy._set_conn_device_topic("8", "rr/d/i/did-test-2/other")
 
     proxy._observe_snapshot("9", "c2b", ROBOT_TOPIC, 102, PUSH, b"")
     proxy._observe_snapshot("8", "c2b", ROBOT_TOPIC, 102, PUSH, b"")
