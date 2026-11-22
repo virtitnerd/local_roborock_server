@@ -389,10 +389,11 @@ def test_v2_to_v5_model_strings_use_the_debug_path() -> None:
     assert voice_info_path_for_model("roborock.vacuum.zzzv2") == ""
 
 
-def test_cache_hit_that_vanishes_before_the_read_is_a_miss(
+def test_cache_hit_that_vanishes_before_it_is_served_is_a_miss(
     tmp_path: Path, monkeypatch
 ) -> None:
     import asyncio
+    import os
 
     from https_server.routes.plugin import voice_pkg
 
@@ -400,14 +401,19 @@ def test_cache_hit_that_vanishes_before_the_read_is_a_miss(
     _fake_fetch(monkeypatch, {source: b"fresh"})
     cache_dir = tmp_path / "voice_pkg_cache"
     cache_dir.mkdir()
-    real = Path.read_bytes
+    path = cache_dir / (
+        voice_pkg._digest("https://us-app.roborock.com/a/voice-pkg/package/en.pkg")
+        + ".pkg"
+    )
+    path.write_bytes(b"old")
+    real = os.utime
 
-    def vanishing(self: Path) -> bytes:
-        if self.suffix == ".pkg":
-            raise FileNotFoundError(str(self))
-        return real(self)
+    def vanishing(target, *args, **kwargs):
+        if str(target).endswith(".pkg"):
+            raise FileNotFoundError(str(target))
+        return real(target, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_bytes", vanishing)
+    monkeypatch.setattr(voice_pkg.os, "utime", vanishing)
     _, response = asyncio.run(
         voice_pkg._voice_file_response(
             tmp_path, "us-app.roborock.com", "/a/voice-pkg/package/en.pkg"
@@ -431,3 +437,44 @@ def test_package_cache_is_bounded_by_total_bytes(tmp_path: Path, monkeypatch) ->
     voice_pkg._evict_old_packages(tmp_path)
 
     assert sorted(p.name for p in tmp_path.iterdir()) == ["2.pkg", "3.pkg"]
+
+
+def test_info_cache_is_kept_per_region(tmp_path: Path, monkeypatch) -> None:
+    from https_server.routes.plugin import voice_pkg
+
+    class Ctx:
+        def __init__(self, region: str) -> None:
+            self.region = region
+
+        def api_url(self) -> str:
+            return "https://api-roborock.example.com"
+
+    import asyncio
+
+    path = "/app/beryllite/voice-pkg/info"
+    _fake_fetch(
+        monkeypatch, {"https://us-app.roborock.com" + path: json.dumps(INFO).encode()}
+    )
+    asyncio.run(voice_pkg._voice_info_response(Ctx("us"), tmp_path, path))
+    _fake_fetch(monkeypatch, {})
+    try:
+        asyncio.run(voice_pkg._voice_info_response(Ctx("eu"), tmp_path, path))
+    except voice_pkg.VoicePkgError:
+        pass
+    else:
+        raise AssertionError("an eu request must not be answered from the us cache")
+
+
+def test_a_corrupt_cached_info_is_a_502_not_an_error(
+    tmp_path: Path, monkeypatch
+) -> None:
+    fds = "https://awsusor0.fds.api.xiaomi.com/app/beryllite/voice-pkg/info"
+    _fake_fetch(monkeypatch, {fds: json.dumps(INFO).encode()})
+    client = _client(tmp_path)
+    assert client.get("/app/beryllite/voice-pkg/info").status_code == 200
+    _fake_fetch(monkeypatch, {})
+    cache_files = list(tmp_path.rglob("info-*.json"))
+    assert len(cache_files) == 1
+    for content in (b"{not json", b"[]", b'{"host": "x"}', b'{"host": 1, "info": {}}'):
+        cache_files[0].write_bytes(content)
+        assert client.get("/app/beryllite/voice-pkg/info").status_code == 502

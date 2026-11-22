@@ -17,7 +17,7 @@ from typing import Any, TypeVar
 from urllib.parse import urlparse
 
 import aiohttp
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response
 from shared.context import ServerContext
 
 VOICE_INFO_ROUTE_NAME = "voice_pkg_info"
@@ -208,6 +208,20 @@ def _write_atomic(path: Path, data: bytes) -> None:
     temp.replace(path)
 
 
+def _touch(path: Path) -> bool:
+    """Marks a cached file as just used; False when it is missing or was evicted."""
+    try:
+        os.utime(path)
+    except OSError:
+        return False
+    return True
+
+
+def _write_and_evict(path: Path, data: bytes) -> None:
+    _write_atomic(path, data)
+    _evict_old_packages(path.parent)
+
+
 def _evict_old_packages(cache_dir: Path) -> None:
     """Keeps the newest packages within the file and byte caps and drops stale temp files."""
     now = time.time()
@@ -274,8 +288,10 @@ async def _fetch_info(
         except Exception as exc:  # noqa: BLE001
             errors.append(f"{host}: {exc}")
             continue
-        _write_atomic(
-            cache_file, json.dumps({"host": host, "info": info}).encode("utf-8")
+        await asyncio.to_thread(
+            _write_atomic,
+            cache_file,
+            json.dumps({"host": host, "info": info}).encode("utf-8"),
         )
         return host, info
     raise VoicePkgError(
@@ -283,24 +299,39 @@ async def _fetch_info(
     )
 
 
+def _read_cached_info(cache_file: Path) -> tuple[str, dict[str, Any]] | None:
+    """The cached info as (host, info), or None when it is missing or unreadable."""
+    try:
+        cached = json.loads(cache_file.read_text(encoding="utf-8"))
+        host, info = cached["host"], cached["info"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(host, str) or not isinstance(info, dict):
+        return None
+    return host, info
+
+
 async def _voice_info_response(
     ctx: ServerContext, runtime_dir: Path, upstream_path: str
 ) -> tuple[str, Response]:
-    cache_file = _cache_dir(runtime_dir) / f"info-{_digest(upstream_path)[:24]}.json"
+    region = ctx.region.strip().lower()
+    cache_file = (
+        _cache_dir(runtime_dir)
+        / f"info-{_digest(f'{region}:{upstream_path}')[:24]}.json"
+    )
     try:
         host, info = await _single_flight(
-            f"info:{ctx.region}:{cache_file}",
+            f"info:{region}:{cache_file}",
             lambda: _fetch_info(ctx, cache_file, upstream_path),
         )
     except VoicePkgError:
-        if not cache_file.exists():
+        cached = await asyncio.to_thread(_read_cached_info, cache_file)
+        if cached is None:
             raise
-        cached = json.loads(cache_file.read_text(encoding="utf-8"))
-        body = _rewrite_info(
-            cached["info"], info_host=cached["host"], api_url=ctx.api_url()
-        )
-        return f"https://{cached['host']}{upstream_path}", JSONResponse(
-            body, headers={"X-RR-Voice-Cache": "stale"}
+        host, info = cached
+        return f"https://{host}{upstream_path}", JSONResponse(
+            _rewrite_info(info, info_host=host, api_url=ctx.api_url()),
+            headers={"X-RR-Voice-Cache": "stale"},
         )
     body = _rewrite_info(info, info_host=host, api_url=ctx.api_url())
     return f"https://{host}{upstream_path}", JSONResponse(
@@ -314,15 +345,9 @@ async def _voice_file_response(
     source_url = f"https://{host}{path}"
     cache_file = _cache_dir(runtime_dir) / f"{_digest(source_url)}.pkg"
     headers = {"Cache-Control": "public, max-age=86400"}
-    try:
-        cached = cache_file.read_bytes()
-    except OSError:
-        cached = None  # missing or evicted while we looked: treat as a miss
-    if cached is not None:
-        with contextlib.suppress(OSError):
-            os.utime(cache_file)
-        return source_url, Response(
-            cached,
+    if await asyncio.to_thread(_touch, cache_file):
+        return source_url, FileResponse(
+            cache_file,
             media_type="application/octet-stream",
             headers={**headers, "X-RR-Voice-Cache": "hit"},
         )
@@ -331,8 +356,7 @@ async def _voice_file_response(
         data = await fetch_voice_bytes(
             source_url, max_bytes=VOICE_PKG_MAX_BYTES, timeout_s=120
         )
-        _write_atomic(cache_file, data)
-        _evict_old_packages(cache_file.parent)
+        await asyncio.to_thread(_write_and_evict, cache_file, data)
         return data
 
     try:
