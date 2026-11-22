@@ -9,7 +9,7 @@ import pytest
 
 from roborock_local_server.bundled_backend.shared.device_snapshot_store import DeviceSnapshotStore, is_status_answer
 
-DUID = "2e2txkqKqxVifcIdyOT1lY"
+DUID = "duid-test-1"
 
 
 def _store(tmp_path: Path) -> DeviceSnapshotStore:
@@ -86,18 +86,18 @@ def test_request_nonce_is_found_in_the_escaped_rpc_payload(tmp_path: Path) -> No
     store = _store(tmp_path)
     payload = (
         '{"dps":{"101":"{\\"id\\":29755,\\"method\\":\\"get_map_v1\\",\\"params\\":[],'
-        '\\"security\\":{\\"endpoint\\":\\"w5Mpv215\\",\\"nonce\\":\\"0fd7440a89d9e25af17aa00493c29025\\"}}"},"t":1}'
+        '\\"security\\":{\\"endpoint\\":\\"testep01\\",\\"nonce\\":\\"00112233445566778899aabbccddeeff\\"}}"},"t":1}'
     )
 
     store.note_request(DUID, payload)
 
-    assert store._nonces[DUID] == {"w5Mpv215": "0fd7440a89d9e25af17aa00493c29025"}
+    assert store._nonces[DUID] == {"testep01": "00112233445566778899aabbccddeeff"}
 
 
 def test_map_reply_without_a_known_nonce_is_ignored(tmp_path: Path) -> None:
     store = _store(tmp_path)
 
-    store.record_map(DUID, b"w5Mpv215" + b"\x00" * 64)
+    store.record_map(DUID, b"testep01" + b"\x00" * 64)
 
     assert store.get(DUID) is None
 
@@ -113,14 +113,14 @@ def test_map_reply_is_decrypted_and_its_position_stored(tmp_path: Path, monkeypa
 
     map_bytes = b"fake map bytes"
     nonce = bytes(range(16))
-    header = b"w5Mpv215" + b"\x00" * 8 + b"\x01\x00" + b"\x00" * 6
+    header = b"testep01" + b"\x00" * 8 + b"\x01\x00" + b"\x00" * 6
     body = Utils.encrypt_cbc(gzip.compress(map_bytes), nonce)
     monkeypatch.setattr(module, "_parse_map", lambda data: (module._point(Point(24343, 38108, 170)), module._point(Point(26306, 25598, -177))) if data == map_bytes else (None, None))
 
     store = _store(tmp_path)
     store.note_request(
         DUID,
-        '{"dps":{"101":"{\\"security\\":{\\"endpoint\\":\\"w5Mpv215\\",\\"nonce\\":\\"%s\\"}}"}}' % nonce.hex(),
+        '{"dps":{"101":"{\\"security\\":{\\"endpoint\\":\\"testep01\\",\\"nonce\\":\\"%s\\"}}"}}' % nonce.hex(),
     )
     store.record_map(DUID, header + body)
 
@@ -154,10 +154,10 @@ def _seed_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, map_bytes: bytes 
         else (None, None),
     )
     nonce = bytes(range(16))
-    header = b"w5Mpv215" + b"\x00" * 8 + b"\x01\x00" + b"\x00" * 6
+    header = b"testep01" + b"\x00" * 8 + b"\x01\x00" + b"\x00" * 6
     reply = header + Utils.encrypt_cbc(gzip.compress(map_bytes), nonce)
-    request = '{"dps":{"101":"{\\"security\\":{\\"endpoint\\":\\"w5Mpv215\\",\\"nonce\\":\\"%s\\"}}"}}' % nonce.hex()
-    robot = "rr/d/i/1103829226788/abc"
+    request = '{"dps":{"101":"{\\"security\\":{\\"endpoint\\":\\"testep01\\",\\"nonce\\":\\"%s\\"}}"}}' % nonce.hex()
+    robot = "rr/d/i/did-test-1/abc"
     path = tmp_path / "decoded.jsonl"
     path.write_text(
         _log_line("2026-10-22T00:20:00+00:00", "c2b", f"rr/m/i/user/abcd1234/{DUID}", {"protocol_value": 101, "payload_utf8": request})
@@ -169,7 +169,7 @@ def _seed_log(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, map_bytes: bytes 
         )
         + _log_line("2026-10-22T00:33:57+00:00", "c2b", robot, {"protocol_value": 102, "payload_utf8": '{"dps":{"122":5}}'})
         # An app's own traffic and unrelated lines must not count as the robot speaking.
-        + _log_line("2026-10-22T03:00:00+00:00", "b2c", "rr/d/o/1103829226788/abc", {"protocol_value": 102, "payload_utf8": '{"dps":{"122":99}}'})
+        + _log_line("2026-10-22T03:00:00+00:00", "b2c", "rr/d/o/did-test-1/abc", {"protocol_value": 102, "payload_utf8": '{"dps":{"122":99}}'})
         + "not json at all\n",
         encoding="utf-8",
     )
@@ -180,7 +180,7 @@ def test_seed_recovers_the_last_status_map_and_time_from_the_log(tmp_path: Path,
     log = _seed_log(tmp_path, monkeypatch)
     store = _store(tmp_path / "state")
 
-    added = store.seed_from_mqtt_jsonl(log, lambda did: DUID if did == "1103829226788" else "")
+    added = store.seed_from_mqtt_jsonl(log, lambda did: DUID if did == "did-test-1" else "")
 
     snapshot = store.get(DUID, include_map=True)
     assert added == 1
@@ -256,7 +256,7 @@ def _request(security: dict) -> str:
     return json.dumps({"dps": {"101": json.dumps({"id": 1, "method": "get_map_v1", "security": security})}})
 
 
-@pytest.mark.parametrize("endpoint", ["w5Mp+215", "ab/Cd+Ef", "w5Mpv215"])
+@pytest.mark.parametrize("endpoint", ["w5Mp+215", "ab/Cd+Ef", "testep01"])
 def test_note_request_accepts_base64_endpoints_and_either_key_order(tmp_path: Path, endpoint: str) -> None:
     store = _store(tmp_path)
     store.note_request(DUID, _request({"endpoint": endpoint, "nonce": "00ff"}))
@@ -269,7 +269,7 @@ def test_note_request_accepts_base64_endpoints_and_either_key_order(tmp_path: Pa
 
 def test_note_request_ignores_a_non_hex_nonce_and_malformed_security(tmp_path: Path) -> None:
     store = _store(tmp_path)
-    store.note_request(DUID, _request({"endpoint": "w5Mpv215", "nonce": "zz"}))
+    store.note_request(DUID, _request({"endpoint": "testep01", "nonce": "zz"}))
     store.note_request(DUID, _request({"endpoint": "", "nonce": "00ff"}))
     store.note_request(DUID, '{"security": "oops"}')
     assert store._nonces == {}
@@ -281,10 +281,10 @@ def test_map_reply_with_a_base64_endpoint_is_decrypted(tmp_path: Path, monkeypat
     from roborock_local_server.bundled_backend.shared import device_snapshot_store as module
 
     nonce = bytes(range(16))
-    header = b"w5M/+215" + b"\x00" * 16
+    header = b"tst/+001" + b"\x00" * 16
     monkeypatch.setattr(module, "_parse_map", lambda data: (None, None))
     store = _store(tmp_path)
-    store.note_request(DUID, _request({"nonce": nonce.hex(), "endpoint": "w5M/+215"}))
+    store.note_request(DUID, _request({"nonce": nonce.hex(), "endpoint": "tst/+001"}))
     store.record_map(DUID, header + Utils.encrypt_cbc(gzip.compress(b"map"), nonce))
 
     assert base64.b64decode(store.get(DUID, include_map=True)["map"]) == b"map"
