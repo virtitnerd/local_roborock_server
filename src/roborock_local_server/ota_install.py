@@ -25,6 +25,7 @@ from .ota_dry_run import (
     package_address,
     package_family,
     package_md5,
+    package_name_prefix,
     release_package,
     resolve_package,
 )
@@ -213,7 +214,7 @@ class OtaInstaller:
         entry = self.catalog.entry(model, version)
         if entry is None:
             return {"started": False, "reason": f"{version} is not in the firmware catalog for {model}"}
-        if self._is_downgrade(version, reported) and not (confirm and confirm_version == version):
+        if self._is_downgrade(version, reported) and not (confirm and firmware_versions.same(confirm_version, version)):
             return {
                 "started": False, "needs_confirmation": True, "version": version,
                 "reason": f"{version} is older than the {reported} the robot runs; resend with confirm_downgrade true and version {version}",
@@ -249,7 +250,9 @@ class OtaInstaller:
         own = own or str((self.catalog.entry(model, reported) or {}).get("url") or "")
         if not own:
             raise PackageRefused(f"The package address of the {reported} the robot runs is not known, so its hardware cannot be checked")
-        if package_family(own) and package_family(url) != package_family(own):
+        if not (package_family(own) and package_family(url) and package_name_prefix(own) and package_name_prefix(url)):
+            raise PackageRefused("The package address does not name its hardware, so the robot's hardware cannot be checked")
+        if package_family(url) != package_family(own) or package_name_prefix(url) != package_name_prefix(own):
             raise PackageRefused(f"The package of {version} is for different hardware than the one the robot runs now")
         return url
 
@@ -261,14 +264,14 @@ class OtaInstaller:
         previous = str((self.catalog.robot(duid) or {}).get("previous_version") or "")
         info: dict[str, Any] = {"downgradeAllowed": allowed, "availableVersions": [
             {
-                "version": entry["version"], "current": entry["version"] == reported,
-                "installable": allowed and bool(entry.get("md5")) and entry["version"] != reported,
+                "version": entry["version"], "current": firmware_versions.same(entry["version"], reported),
+                "installable": allowed and bool(entry.get("md5")) and not firmware_versions.same(entry["version"], reported),
                 "firstSeen": entry.get("first_seen"), "size": entry.get("size"),
                 "released": entry.get("released"),
             }
             for entry in (self.catalog.versions(model) if model else [])
         ]}
-        if previous and previous != reported:
+        if previous and not firmware_versions.same(previous, reported):
             info["previousVersion"] = previous
         return info
 
@@ -286,9 +289,10 @@ class OtaInstaller:
         model = self.model_of(duid, vacuum)
         package: dict[str, Any] | None = None
         try:
-            before = await self._learn(duid, model, reported, SOURCE_ROBOT) if model and reported and reported != version else None
+            before = await self._learn(duid, model, reported, SOURCE_ROBOT) if model and reported and not firmware_versions.same(reported, version) else None
             keep = {f"{before['md5']}.pkg"} if self._keep_packages and before and before.get("md5") else set()
             package = await resolve(keep)
+            self._set_live(duid, "START")  # the fetch can use up the silence window, and the install is only starting
             data = package.get("data")
             size = data.stat().st_size if isinstance(data, Path) else len(data or b"")
             if model:
@@ -425,8 +429,9 @@ class OtaInstaller:
     ) -> None:
         supervisor = self._supervisor
         duid = device["duid"]
-        client = _RoutineMqttClient(supervisor.context, device, logger)
+        client = None
         try:
+            client = _RoutineMqttClient(supervisor.context, device, logger)
             await client.connect()
             result = await supervisor.ota_dry_run.run(
                 client, supervisor.context.api_url(), package, None, True,
@@ -438,7 +443,8 @@ class OtaInstaller:
             if isinstance(package.get("data"), Path):
                 release_package(package["data"].name)
             try:
-                await client.close()
+                if client is not None:
+                    await client.close()
             except Exception as exc:  # noqa: BLE001
                 logger.warning("Closing the robot connection failed: %s", exc)
         failure = self._failure(result)
@@ -455,7 +461,7 @@ class OtaInstaller:
         else:
             self._set_live(duid, "FAILED", err_msg=failure, err_code=1)
         changed = bool(reported) and bool(previous) and not firmware_versions.same(reported or "", previous)
-        if model and previous and previous != version and result.get("ran") and (succeeded or changed):
+        if model and previous and not firmware_versions.same(previous, version) and result.get("ran") and (succeeded or changed):
             self.catalog.remember_install(duid, model, previous, version)
         if succeeded:
             # With keep_previous_package the packages before and after this install stay for a quick reinstall.

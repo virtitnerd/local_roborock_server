@@ -224,6 +224,43 @@ def test_the_hardware_folder_of_a_package_address() -> None:
     assert ota_dry_run.package_family(f"https://files.roborock.com/x.{MD5}.signed.pkg") == ""
 
 
+def test_the_hardware_of_the_real_package_address_shapes() -> None:
+    folder = f"https://cdn.awsusor0.fds.api.mi-img.com/rriotpkg/a245/rpkg_beryl_lite_3348_fullos.{MD5}.signed.pkg"
+    regional = f"https://rrpkg-us.roborock.com/a245/rpkg_beryl_lite_3552_fullos.{MD5}.signed.pkg"
+    for url in (folder, regional):
+        assert ota_dry_run.package_family(url) == "a245" and ota_dry_run.package_name_prefix(url) == "rpkg_beryl_lite"
+    assert ota_dry_run.package_name_prefix(URL) == "pearl-s"
+    assert ota_dry_run.package_name_prefix(f"https://files.roborock.com/x.{MD5}.signed.pkg") == ""
+
+
+@pytest.mark.parametrize(("own", "target", "reason"), [
+    (f"https://cdn.awsusor0.fds.api.mi-img.com/rpkg_a245_3552_fullos.{OLD_MD5}.signed.pkg", OLD_URL, "hardware cannot be checked"),
+    (f"https://cdn.awsusor0.fds.api.mi-img.com/rriotpkg/a245/rpkg_beryl_lite_3552_fullos.{OLD_MD5}.signed.pkg",
+     f"https://cdn.awsusor0.fds.api.mi-img.com/rpkg_beryl_lite_3348_fullos.{OLD_MD5}.signed.pkg", "hardware cannot be checked"),
+    (f"https://cdn.awsusor0.fds.api.mi-img.com/rriotpkg/a245/rpkg_other_3552_fullos.{OLD_MD5}.signed.pkg", OLD_URL, "different hardware"),
+    (f"https://cdn.awsusor0.fds.api.mi-img.com/rriotpkg/a101/rpkg_beryl_lite_3552_fullos.{OLD_MD5}.signed.pkg", OLD_URL, "different hardware"),
+])
+def test_a_package_whose_hardware_is_missing_or_different_is_refused(tmp_path, monkeypatch, robot, own, target, reason) -> None:
+    supervisor, _ = catalog_supervisor(tmp_path, monkeypatch, reported="02.35.52", extra="allow_downgrade = true\n")
+    supervisor.ota_installer.catalog.add(MODEL, "02.33.48", source="robot_reported", url=OLD_URL, md5=OLD_MD5)
+    supervisor.cloud_manager.urls = {"02.33.48": target, "02.35.52": own}
+    started = asyncio.run(supervisor.ota_installer.start_version("robot", "02.33.48", True, "02.33.48"))
+    assert started["started"] is False and reason in started["reason"]
+    assert supervisor.ota_installer._running == {} and robot.downloads == []
+
+
+def test_a_robot_connection_that_cannot_be_built_still_unpins_the_package(tmp_path, monkeypatch) -> None:
+    supervisor, _ = _prepare(tmp_path, monkeypatch, ["idle"])
+
+    def broken(*args):
+        raise OSError("no certificates")
+
+    monkeypatch.setattr(ota_install, "_RoutineMqttClient", broken)
+    live = _run_install(supervisor)
+    assert live["status"] == "FAILED" and "no certificates" in live["errMsg"]
+    assert ota_dry_run._PINNED == {}
+
+
 def test_only_robots_in_the_inventory_are_owned(tmp_path, monkeypatch) -> None:
     supervisor = button_supervisor(tmp_path, monkeypatch, enable=True)
     assert supervisor.ota_installer.owns("robot") and not supervisor.ota_installer.owns("someone-elses")
@@ -331,6 +368,31 @@ def test_the_same_version_written_differently_is_not_a_downgrade_or_another_vers
     installer = supervisor.ota_installer
     assert installer._is_downgrade("02.35.52", "2.35.52") is False
     assert "already runs" in asyncio.run(installer.start_version("robot", "02.35.52"))["reason"]
+
+
+def test_the_version_list_marks_the_running_version_whatever_its_spelling(tmp_path, monkeypatch) -> None:
+    supervisor, _ = catalog_supervisor(tmp_path, monkeypatch, reported="2.35.52", extra="allow_downgrade = true\n")
+    installer = supervisor.ota_installer
+    installer.catalog.add(MODEL, "02.35.52", source="cloud_offer", url=OLD_URL, md5=OLD_MD5)
+    rows = {row["version"]: row for row in installer.version_info("robot")["availableVersions"]}
+    assert rows["02.35.52"]["current"] is True and rows["02.35.52"]["installable"] is False
+
+
+def test_a_slow_package_fetch_does_not_make_the_starting_install_read_as_failed(tmp_path, monkeypatch) -> None:
+    installer = button_supervisor(tmp_path, monkeypatch, enable=True).ota_installer
+    seen = {}
+
+    async def resolve(keep):
+        installer._live["robot"]["at"] -= installer.LIVE_SECONDS + 1  # the fetch took the whole window
+        return {"url": URL, "md5": MD5, "data": b"x"}
+
+    async def install(*args, **kwargs):
+        seen["live"] = installer.live_status("robot")
+
+    monkeypatch.setattr(installer, "_install", install)
+    installer._set_live("robot", "START")
+    asyncio.run(installer._prepare({"duid": "robot", "localkey": ""}, {}, "02.16.00", "02.16.01", resolve))
+    assert seen["live"]["status"] == "START"
 
 
 def test_an_unparseable_version_needs_confirmation(tmp_path, monkeypatch) -> None:
