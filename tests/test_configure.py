@@ -176,7 +176,7 @@ def test_collect_configure_answers_hides_actalis_hmac_prompt(monkeypatch: pytest
             "",
             "example.com",
             "acme@example.com",
-            "y",
+            "actalis",
             "kid-123",
             "user@example.com",
         ]
