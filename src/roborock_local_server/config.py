@@ -113,6 +113,17 @@ class MatterConfig:
 
 
 @dataclass(frozen=True)
+class OtaConfig:
+    """Firmware installs from the official app's Update button; off until the owner opts in."""
+
+    enable_install: bool = False
+    # Installing a catalog version other than the cloud's offer, older ones included; proven on one model only.
+    allow_downgrade: bool = False
+    # Keeps the package files of the versions before and after an install in the cache, for a quick reinstall.
+    keep_previous_package: bool = False
+
+
+@dataclass(frozen=True)
 class AppConfig:
     network: NetworkConfig
     broker: BrokerConfig
@@ -122,6 +133,7 @@ class AppConfig:
     turn: TurnConfig = TurnConfig()
     logging: LoggingConfig = LoggingConfig()
     matter: MatterConfig = MatterConfig()
+    ota: OtaConfig = OtaConfig()
 
 
 @dataclass(frozen=True)
@@ -268,6 +280,16 @@ def _matter_key_proxy_enabled(from_file: bool) -> bool:
     return from_file
 
 
+def _ota_install_enabled(from_file: bool) -> bool:
+    """The env var wins when set, so installs can also be switched on for a config.toml that already exists."""
+    override = os.environ.get("ROBOROCK_SERVER_OTA_ENABLE_INSTALL", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    return from_file
+
+
 def load_config(path: str | Path) -> AppConfig:
     config_path = Path(path).resolve()
     parsed = tomllib.loads(config_path.read_text(encoding="utf-8"))
@@ -280,6 +302,7 @@ def load_config(path: str | Path) -> AppConfig:
     admin = _get_section(parsed, "admin")
     turn = _get_section(parsed, "turn")
     matter = _get_section(parsed, "matter")
+    ota = _get_section(parsed, "ota")
     turn_mode = str(turn.get("mode", "external" if _as_bool(turn.get("enabled"), False) else "disabled")).strip().lower()
     broker_mode = str(broker.get("mode", "embedded")).strip().lower()
     if broker_mode not in {"embedded", "external"}:
@@ -368,6 +391,11 @@ def load_config(path: str | Path) -> AppConfig:
             key_file=str(tls.get("key_file", "")).strip(),
         ),
         matter=MatterConfig(key_proxy=_matter_key_proxy_enabled(_as_bool(matter.get("key_proxy"), False))),
+        ota=OtaConfig(
+            enable_install=_ota_install_enabled(_as_bool(ota.get("enable_install"), False)),
+            allow_downgrade=_as_bool(ota.get("allow_downgrade"), False),
+            keep_previous_package=_as_bool(ota.get("keep_previous_package"), False),
+        ),
         admin=AdminConfig(
             password_hash=_require_non_empty(admin.get("password_hash"), "admin.password_hash"),
             session_secret=_require_non_empty(admin.get("session_secret"), "admin.session_secret"),
