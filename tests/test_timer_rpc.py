@@ -494,13 +494,97 @@ def test_no_fallback_reply_is_sent_once_the_robot_has_answered(ctx, monkeypatch)
     assert sent.count(cloud.topic_out) == 1
 
 
-def test_a_robot_error_reply_to_get_timer_is_passed_through(ctx):
+def _robot_error_frame(request_id):
+    body = json.dumps({"id": request_id, "error": {"code": -10005, "message": "unsupported"}})
+    payload = json.dumps({"t": 1790000000, "dps": {"102": body}}).encode()
+    return create_mqtt_encoder(LOCALKEY)(RoborockMessage(protocol=RoborockMessageProtocol.RPC_RESPONSE, payload=payload))
+
+
+def test_a_robot_error_reply_to_get_timer_still_shows_the_stores_timers(ctx):
     interceptor = timer_rpc.TimerRpcInterceptor(ctx)
     interceptor(DUID, _encode_request("get_timer", [], request_id=63))
-    body = json.dumps({"id": 63, "error": {"code": -10005, "message": "unsupported"}})
-    payload = json.dumps({"t": 1790000000, "dps": {"102": body}}).encode()
-    frame = create_mqtt_encoder(LOCALKEY)(RoborockMessage(protocol=RoborockMessageProtocol.RPC_RESPONSE, payload=payload))
-    assert interceptor.merge_response(DUID, frame) is None
+    reply = _decode_reply(interceptor.merge_response(DUID, _robot_error_frame(63)))
+    assert reply.api_error is None
+    assert [entry[0] for entry in reply.data] == ["3549431", "3549434", "3878757"]
+
+
+def test_a_robot_error_reply_with_nothing_in_the_store_is_passed_through(ctx):
+    for job in schedule_store.list_jobs(ctx, DUID):
+        schedule_store.delete_job(ctx, DUID, str(job["id"]))
+    interceptor = timer_rpc.TimerRpcInterceptor(ctx)
+    interceptor(DUID, _encode_request("get_timer", [], request_id=64))
+    assert interceptor.merge_response(DUID, _robot_error_frame(64)) is None
+
+
+def test_a_pending_get_timer_is_cleared_once_the_robot_has_answered(ctx):
+    interceptor = timer_rpc.TimerRpcInterceptor(ctx)
+    interceptor(DUID, _encode_request("get_timer", [], request_id=65))
+    assert interceptor.merge_response(DUID, _encode_robot_reply(65, [])) is not None
+    assert interceptor._pending == {}
+    assert interceptor.merge_response(DUID, _encode_robot_reply(65, [])) is None
+
+
+ROBOT_TIMER = ["legacy-1", "on", ["0 9 * * *", ["start_clean", {}]]]
+
+
+def _edit_legacy_timer(job_id="legacy-1"):
+    return [[job_id, ["30 7 * * 1,2", ["start_clean", {"fan_power": 102}]]]]
+
+
+def test_editing_a_timer_the_robot_listed_goes_to_the_robot(ctx):
+    interceptor = timer_rpc.TimerRpcInterceptor(ctx)
+    interceptor(DUID, _encode_request("get_timer", [], request_id=66))
+    interceptor.merge_response(DUID, _encode_robot_reply(66, [ROBOT_TIMER]))
+
+    assert interceptor(DUID, _encode_request("set_timer", _edit_legacy_timer())) is None
+    assert all(str(j["id"]) != "legacy-1" for j in schedule_store.list_jobs(ctx, DUID))
+
+
+def test_a_new_timer_is_still_stored_after_the_robot_listed_others(ctx):
+    interceptor = timer_rpc.TimerRpcInterceptor(ctx)
+    interceptor(DUID, _encode_request("get_timer", [], request_id=67))
+    interceptor.merge_response(DUID, _encode_robot_reply(67, [ROBOT_TIMER]))
+
+    assert interceptor(DUID, _encode_request("set_timer", _edit_legacy_timer("brand-new"))) is not None
+    assert any(str(j["id"]) == "brand-new" for j in schedule_store.list_jobs(ctx, DUID))
+
+
+def test_a_timer_the_store_owns_is_edited_in_the_store_even_if_the_robot_lists_it(ctx):
+    interceptor = timer_rpc.TimerRpcInterceptor(ctx)
+    interceptor(DUID, _encode_request("get_timer", [], request_id=68))
+    interceptor.merge_response(DUID, _encode_robot_reply(68, [["3549431", "on", ["0 9 * * *", ["start_clean", {}]]]]))
+
+    assert interceptor(DUID, _encode_request("set_timer", _edit_legacy_timer("3549431"))) is not None
+
+
+def test_the_robots_timer_list_is_forgotten_when_its_next_reply_drops_a_timer(ctx):
+    interceptor = timer_rpc.TimerRpcInterceptor(ctx)
+    interceptor(DUID, _encode_request("get_timer", [], request_id=69))
+    interceptor.merge_response(DUID, _encode_robot_reply(69, [ROBOT_TIMER]))
+    interceptor(DUID, _encode_request("get_timer", [], request_id=70))
+    interceptor.merge_response(DUID, _encode_robot_reply(70, []))
+
+    assert interceptor(DUID, _encode_request("set_timer", _edit_legacy_timer())) is not None
+
+
+def test_positional_start_clean_action_carries_fan_power_and_segments(ctx):
+    params = [["pos-1", ["0 9 * * *", ["start_clean", 104, "16,17"]]]]
+    assert timer_rpc.handle_timer_request(ctx, DUID, "set_timer", params) == ["ok"]
+    entry = _job(ctx, "pos-1")["param"]["params"][0]
+    assert (entry["fan_power"], entry["segments"]) == (104, "16,17")
+
+
+def test_positional_start_clean_without_segments_keeps_the_default_rooms(ctx):
+    timer_rpc.handle_timer_request(ctx, DUID, "set_timer", [["pos-2", ["0 9 * * *", ["start_clean", 102]]]])
+    entry = _job(ctx, "pos-2")["param"]["params"][0]
+    assert (entry["fan_power"], entry["segments"]) == (102, "0")
+
+
+@pytest.mark.parametrize("action", [["start_clean", 102, "0", 0], ["start_clean", [1]], ["start_clean", None]])
+def test_positional_start_clean_the_store_cannot_place_goes_to_the_robot(ctx, action):
+    interceptor = timer_rpc.TimerRpcInterceptor(ctx)
+    assert interceptor(DUID, _encode_request("set_timer", [["pos-3", ["0 9 * * *", action]]])) is None
+    assert all(str(j["id"]) != "pos-3" for j in schedule_store.list_jobs(ctx, DUID))
 
 
 def test_one_job_with_an_unreadable_cron_does_not_hide_the_other_timers(ctx):

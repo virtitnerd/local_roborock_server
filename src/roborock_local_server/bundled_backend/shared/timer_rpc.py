@@ -9,14 +9,13 @@ import json
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from roborock.protocol import create_mqtt_decoder, create_mqtt_encoder
 from roborock.roborock_message import RoborockMessage, RoborockMessageProtocol
 
-from .constants import DEFAULT_TIMEZONE
-from .schedule_runner import CronError, parse_cron
+from .schedule_runner import CronError, parse_cron, server_timezone
 from .schedule_store import (
     JOB_SETTING_KEYS,
     SettingsError,
@@ -125,9 +124,23 @@ def _parse_set_timer(params: Any) -> _SetTimer:
     action = detail[1] if len(detail) > 1 else None
     action_name = str(action[0]) if isinstance(action, list) and action else ""
     settings = action[1] if isinstance(action, list) and len(action) > 1 and isinstance(action[1], dict) else {}
+    if action_name == "start_clean" and len(action) > 1 and not isinstance(action[1], dict):
+        settings = _positional_settings(action)
     # A timer written without a status starts on, as the official app's own timers do.
     enabled = True if status is None else str(status).lower() == "on"
     return _SetTimer(job_id, enabled, str(detail[0]), settings, action_name)
+
+
+def _positional_settings(action: list[Any]) -> dict[str, Any]:
+    # Robots without order-segment clean get ["start_clean", fan_power, segments(, map_id)] from the app.
+    fan_power, rest = action[1], action[2:]
+    if len(rest) > 1 or isinstance(fan_power, (bool, list, dict)) or fan_power is None:
+        # A map id (multi-map timers) or an unknown shape: the store cannot place it, so the robot answers.
+        raise ForwardToRobot("positional start_clean the store cannot place")
+    settings: dict[str, Any] = {"fan_power": fan_power}
+    if rest:
+        settings["segments"] = rest[0]
+    return settings
 
 
 def _id_and_status(params: Any) -> tuple[str, str]:
@@ -153,6 +166,7 @@ def handle_timer_request(
     params: Any,
     *,
     default_timezone: str = "",
+    robot_timers: Collection[str] = (),
 ) -> Any:
     """Apply one timer RPC to the store and return the RPC ``result`` value."""
     if method == "get_timer":
@@ -167,6 +181,10 @@ def handle_timer_request(
             parse_cron(cron)
         except CronError as exc:
             raise TimerRequestError(str(exc)) from exc
+        stored = {str(job.get("id")) for job in list_jobs(ctx, duid)}
+        if job_id in robot_timers and job_id not in stored:
+            # Editing a timer the robot listed: a copy in the store would run beside the original.
+            raise ForwardToRobot(f"timer {job_id} is owned by the robot")
         # An empty action object (what older clients send) leaves the job's settings alone;
         # keys it does carry are merged in, so a client can change one option at a time.
         settings = {key: value for key, value in action_settings.items() if key in JOB_SETTING_KEYS}
@@ -177,7 +195,7 @@ def handle_timer_request(
                 param = merge_job_settings(existing.get("param") if existing else None, settings)
             except SettingsError as exc:
                 raise TimerRequestError(str(exc)) from exc
-        zone = str(getattr(ctx, "timezone", "") or default_timezone or DEFAULT_TIMEZONE)
+        zone = str(getattr(ctx, "timezone", "") or default_timezone or server_timezone(ctx))
         upsert_job(ctx, duid, job_id=job_id, cron=cron, enabled=enabled, time_zone=zone, param=param)
         return list(_OK)
 
@@ -213,6 +231,8 @@ class TimerRpcInterceptor:
         self._default_timezone = default_timezone
         # get_timer requests forwarded to the robot whose reply needs the store's entries added.
         self._pending: dict[tuple[str, Any], _Pending] = {}
+        # Ids of the timers each robot listed in its last get_timer reply.
+        self._robot_timers: dict[str, set[str]] = {}
 
     def _localkey(self, duid: str) -> str:
         creds = self._context.runtime_credentials
@@ -243,6 +263,7 @@ class TimerRpcInterceptor:
         try:
             result = handle_timer_request(
                 self._context, duid, method, request.get("params"), default_timezone=self._default_timezone,
+                robot_timers=self._robot_timers.get(duid, ()),
             )
             body: dict[str, Any] = {"id": request_id, "result": result}
         except ForwardToRobot:
@@ -256,8 +277,7 @@ class TimerRpcInterceptor:
             body = {"id": request_id, "error": {"code": -1, "message": "unable to save the schedule"}}
         if method == "get_timer" and "result" in body:
             # The robot may hold legacy timers of its own: let it answer and add the store's entries.
-            if body["result"]:
-                self._remember_pending(duid, request_id, body["result"], message)
+            self._remember_pending(duid, request_id, body["result"], message)
             return None
         return _encode_reply(localkey, message, body)
 
@@ -276,7 +296,7 @@ class TimerRpcInterceptor:
             return None
         key = (duid, request.get("id") if request else None)
         pending = self._pending.get(key)
-        if request is None or request.get("method") != "get_timer" or pending is None:
+        if request is None or request.get("method") != "get_timer" or pending is None or not pending.entries:
             return None
 
         def reply() -> bytes | None:
@@ -311,11 +331,17 @@ class TimerRpcInterceptor:
         if pending is None or pending.expires <= time.monotonic():
             return None
         pending.answered[0] = True
-        if body.get("error") is not None:
-            return None
-        theirs = body.get("result") if isinstance(body.get("result"), list) else []
+        self._pending.pop((duid, body.get("id")), None)
+        failed = body.get("error") is not None
+        theirs = body.get("result") if not failed and isinstance(body.get("result"), list) else []
         known = {str(entry[0]) for entry in theirs if isinstance(entry, list) and entry}
-        merged = [*theirs, *(entry for entry in pending.entries if str(entry[0]) not in known)]
+        if not failed:
+            self._robot_timers[duid] = known
+        extra = [entry for entry in pending.entries if str(entry[0]) not in known]
+        # A robot that rejects get_timer still has the store's timers to show; no error reaches the app then.
+        if not extra and not (failed and pending.entries):
+            return None
+        merged = [*theirs, *extra]
         return _encode_reply(localkey, message, {"id": body.get("id"), "result": merged})
 
 

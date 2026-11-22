@@ -325,6 +325,7 @@ def test_unknown_day_or_month_names_are_rejected(expression):
     [
         ("0 8 * * MON-SUN", {0, 1, 2, 3, 4, 5, 6}),
         ("0 8 * * FRI-SUN", {5, 6, 0}),
+        ("0 8 * * SUN-SUN", {0}),
         ("0 8 * * 6-0", {6, 0}),
         ("0 8 * * SAT-MON", {6, 0, 1}),
         ("0 8 * * 1-7", {0, 1, 2, 3, 4, 5, 6}),
@@ -338,3 +339,26 @@ def test_weekday_ranges_that_reach_or_wrap_past_sunday(expression, weekdays):
 def test_a_day_of_month_step_starting_with_star_is_unrestricted_like_vixie_cron():
     spec = sr.parse_cron("0 8 */2 * MON")
     assert spec.dom_restricted is False and spec.dow_restricted is True
+
+
+def test_server_timezone_prefers_the_configured_zone():
+    assert sr.server_timezone(SimpleNamespace(timezone="Europe/Vienna", region="us")) == "Europe/Vienna"
+
+
+def test_server_timezone_without_the_region_helper_falls_back_to_new_york(monkeypatch):
+    # Main has no data_helpers.default_timezone (the branch that adds it is not merged here).
+    monkeypatch.delattr(sr.data_helpers, "default_timezone", raising=False)
+    assert sr.server_timezone(SimpleNamespace(timezone="", region="eu")) == NEW_YORK
+
+
+def test_server_timezone_uses_the_region_helper_when_present(monkeypatch):
+    monkeypatch.setattr(sr.data_helpers, "default_timezone", lambda ctx: "Europe/Berlin", raising=False)
+    assert sr.server_timezone(SimpleNamespace(timezone="", region="eu")) == "Europe/Berlin"
+
+
+def test_server_timezone_survives_a_context_the_region_helper_cannot_read(monkeypatch):
+    def region_default(ctx):
+        return ctx.timezone
+
+    monkeypatch.setattr(sr.data_helpers, "default_timezone", region_default, raising=False)
+    assert sr.server_timezone(SimpleNamespace()) == NEW_YORK
