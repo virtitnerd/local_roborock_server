@@ -8,7 +8,7 @@ from roborock_local_server.activity_log import read_recent_activity
 from roborock_local_server.config import load_config, resolve_paths
 from roborock_local_server.server import ReleaseSupervisor
 
-QREVO = "2e2txkqKqxVifcIdyOT1lY"
+QREVO = "fakeqrevoduid0000000000"
 QREVO_DID = "1103829226788"
 S7 = "1OVJHS7cL6XxkYkoOGr2Hw"
 

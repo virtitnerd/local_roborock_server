@@ -13,7 +13,7 @@ from roborock_local_server.server import ReleaseSupervisor
 from shared import map_backups
 from shared.routine_runner import RoutineExecutionError
 
-QREVO = "2e2txkqKqxVifcIdyOT1lY"
+QREVO = "fakeqrevoduid0000000000"
 
 # Shaped like python-roborock's MultiMapsList: one saved map, one backup snapshot.
 LISTING = [

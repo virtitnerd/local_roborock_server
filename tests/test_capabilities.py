@@ -12,7 +12,7 @@ from roborock_local_server.server import ReleaseSupervisor
 from shared import capabilities
 from shared.routine_runner import RoutineExecutionError
 
-QREVO = "2e2txkqKqxVifcIdyOT1lY"
+QREVO = "fakeqrevoduid0000000000"
 
 # What the Qrevo answered to get_smart_wash_params on a real dock.
 SMART_WASH = {"smart_wash": 0, "wash_interval": 1200}
