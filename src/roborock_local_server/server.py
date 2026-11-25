@@ -1313,6 +1313,7 @@ class ReleaseSupervisor:
         }
         if matter_proxy.matches(clean_path, request.method):
             matter_proxy.redact_log_entry(entry)
+            raw_path = clean_path
         if explicit_did:
             entry["did"] = explicit_did
         if explicit_pid:
